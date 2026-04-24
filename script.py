@@ -24,27 +24,176 @@ import pytz
 SOCIA_API_KEY = os.environ.get("SOCIAVAULT_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-POST_URL = "https://www.instagram.com/p/DEXr0A7u48L"
-SHORTCODE = "https://www.instagram.com/reels/DEXr0A7u48L"
-
 COMMENTS_LIMIT = 100
 BATCH_SIZE = 20
 
 SPREADSHEET_NAME = "comments_classificados"
-SHEET_NAME = "Sheet1"
+SHEET_RESULTS = "Sheet1"
+SHEET_INPUTS = "inputs"
 FOLDER_ID = "1OGQOSc23ajvUJ8r0AL6UVZorV87Lws85"
+
+tz_br = pytz.timezone("America/Sao_Paulo")
+
+
+# ==============================
+# GOOGLE SERVICES
+# ==============================
+
+def get_google_services():
+    creds_json = json.loads(os.environ.get("GDRIVE_CREDENTIALS"))
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = service_account.Credentials.from_service_account_info(
+        creds_json, scopes=scopes
+    )
+    drive_service = build("drive", "v3", credentials=creds)
+    sheets_service = build("sheets", "v4", credentials=creds)
+    return drive_service, sheets_service
+
+
+def get_spreadsheet_id(drive_service):
+    query = (
+        f"name='{SPREADSHEET_NAME}' and "
+        f"mimeType='application/vnd.google-apps.spreadsheet' and "
+        f"'{FOLDER_ID}' in parents and trashed=false"
+    )
+    existing = drive_service.files().list(
+        q=query,
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+    files = existing.get("files", [])
+    if not files:
+        raise Exception(f"Planilha '{SPREADSHEET_NAME}' não encontrada.")
+    return files[0]["id"]
+
+
+# ==============================
+# LER ABA INPUTS
+# ==============================
+
+def read_inputs(sheets_service, spreadsheet_id):
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{SHEET_INPUTS}!A:E"
+    ).execute()
+
+    rows = result.get("values", [])
+    if len(rows) <= 1:
+        print("Nenhuma entrada na aba inputs.")
+        return []
+
+    headers = rows[0]
+    inputs = []
+    for i, row in enumerate(rows[1:], start=2):  # linha real no Sheets (começa em 2)
+        while len(row) < 5:
+            row.append("")
+        entry = {
+            "row_index": i,
+            "url": row[0].strip(),
+            "perfil": row[1].strip(),
+            "data_insercao": row[2].strip(),
+            "status": row[3].strip().lower(),
+            "ultima_execucao": row[4].strip()
+        }
+        inputs.append(entry)
+
+    return inputs
+
+
+def filter_active_inputs(inputs):
+    hoje = datetime.now(tz_br).date()
+    ativos = []
+
+    for entry in inputs:
+        if entry["status"] == "expirado":
+            continue
+
+        try:
+            data_insercao = datetime.strptime(entry["data_insercao"], "%Y-%m-%d").date()
+        except ValueError:
+            print(f"Data inválida para {entry['url']}, pulando.")
+            continue
+
+        dias_ativos = (hoje - data_insercao).days
+        if dias_ativos > 14:
+            print(f"URL expirada: {entry['url']}")
+            entry["status"] = "expirado"
+            ativos.append(entry)  # ainda adiciona para atualizar o status
+        else:
+            entry["status"] = "ativo"
+            ativos.append(entry)
+
+    return ativos
+
+
+# ==============================
+# ATUALIZAR ABA INPUTS
+# ==============================
+
+def update_input_row(sheets_service, spreadsheet_id, row_index, status, ultima_execucao):
+    range_status = f"{SHEET_INPUTS}!D{row_index}"
+    range_execucao = f"{SHEET_INPUTS}!E{row_index}"
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range_status,
+        valueInputOption="RAW",
+        body={"values": [[status]]}
+    ).execute()
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range_execucao,
+        valueInputOption="RAW",
+        body={"values": [[ultima_execucao]]}
+    ).execute()
+
+
+# ==============================
+# BUSCAR IDs JÁ SALVOS
+# ==============================
+
+def get_saved_ids(sheets_service, spreadsheet_id, post_url):
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{SHEET_RESULTS}!A:Z"
+    ).execute()
+
+    rows = result.get("values", [])
+    if len(rows) <= 1:
+        return set()
+
+    headers = rows[0]
+    if "id" not in headers or "post_url" not in headers:
+        return set()
+
+    id_col = headers.index("id")
+    url_col = headers.index("post_url")
+
+    saved_ids = set()
+    for row in rows[1:]:
+        if len(row) > max(id_col, url_col):
+            if row[url_col].strip() == post_url.strip():
+                saved_ids.add(row[id_col].strip())
+
+    print(f"IDs já salvos para {post_url}: {len(saved_ids)}")
+    return saved_ids
 
 
 # ==============================
 # SCRAPING DE COMENTÁRIOS
 # ==============================
 
-def scrape_instagram_comments():
+def scrape_instagram_comments(post_url, shortcode):
     url = "https://api.sociavault.com/v1/scrape/instagram/comments"
     headers = {"X-API-Key": SOCIA_API_KEY}
     base_params = {
-        "url": POST_URL,
-        "shortcode": SHORTCODE,
+        "url": post_url,
+        "shortcode": shortcode,
         "limit": COMMENTS_LIMIT
     }
 
@@ -71,7 +220,6 @@ def scrape_instagram_comments():
         all_comments.extend(page_comments)
 
         print(f"Página {page}: {len(page_comments)} comentários")
-        print(f"Total acumulado: {len(all_comments)}")
 
         cursor = (
             data.get("data", {}).get("data", {}).get("cursor")
@@ -79,7 +227,6 @@ def scrape_instagram_comments():
         )
 
         if not cursor:
-            print("Paginação finalizada.")
             break
 
         page += 1
@@ -126,13 +273,22 @@ def has_emoji(text):
     return bool(emoji_pattern.search(text))
 
 
-def comments_to_dataframe(comments):
+def comments_to_dataframe(comments, post_url, perfil, saved_ids):
     rows = []
+    skipped = 0
+
     for item in comments:
+        comment_id = str(item.get("id", ""))
+        if comment_id in saved_ids:
+            skipped += 1
+            continue
+
         user = item.get("user", {})
         rows.append({
+            "post_url": post_url,
+            "perfil": perfil,
             "Id Comentário": item.get("_custom_comment_id"),
-            "id": item.get("id"),
+            "id": comment_id,
             "text": item.get("text"),
             "comment_like_count": item.get("like_count"),
             "child_comment_count": item.get("child_comment_count", 0),
@@ -144,6 +300,11 @@ def comments_to_dataframe(comments):
             "pk": user.get("pk"),
             "is_verified": user.get("is_verified")
         })
+
+    print(f"Comentários novos: {len(rows)} | Já salvos (ignorados): {skipped}")
+
+    if not rows:
+        return pd.DataFrame()
 
     df = pd.DataFrame(rows)
     df = df.fillna("")
@@ -246,73 +407,24 @@ def classificar_dataframe(df):
 
 
 # ==============================
-# GOOGLE SHEETS
+# SALVAR NO SHEETS
 # ==============================
-
-def get_google_services():
-    # ✅ Lê credenciais da variável de ambiente em vez do arquivo .json
-    creds_json = json.loads(os.environ.get("GDRIVE_CREDENTIALS"))
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = service_account.Credentials.from_service_account_info(
-        creds_json,
-        scopes=scopes
-    )
-    drive_service = build("drive", "v3", credentials=creds)
-    sheets_service = build("sheets", "v4", credentials=creds)
-    return drive_service, sheets_service
-
-
-def get_or_create_spreadsheet(drive_service):
-    query = (
-        f"name='{SPREADSHEET_NAME}' and "
-        f"mimeType='application/vnd.google-apps.spreadsheet' and "
-        f"'{FOLDER_ID}' in parents and trashed=false"
-    )
-    existing = drive_service.files().list(
-        q=query,
-        fields="files(id, name)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-
-    files = existing.get("files", [])
-    if files:
-        print(f"Planilha existente encontrada: {SPREADSHEET_NAME}")
-        return files[0]["id"]
-
-    file_metadata = {
-        "name": SPREADSHEET_NAME,
-        "mimeType": "application/vnd.google-apps.spreadsheet",
-        "parents": [FOLDER_ID]
-    }
-    created_file = drive_service.files().create(
-        body=file_metadata,
-        fields="id",
-        supportsAllDrives=True
-    ).execute()
-
-    print(f"Planilha criada no Drive: {created_file['id']}")
-    return created_file["id"]
-
 
 def send_dataframe_to_sheets(sheets_service, spreadsheet_id, df):
     df = df.fillna("")
-    values = [df.columns.tolist()] + df.astype(str).values.tolist()
 
     existing_data = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"{SHEET_NAME}!A:A"
+        range=f"{SHEET_RESULTS}!A:A"
     ).execute()
 
     existing_rows = existing_data.get("values", [])
 
     if not existing_rows:
+        values = [df.columns.tolist()] + df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f"{SHEET_NAME}!A1",
+            range=f"{SHEET_RESULTS}!A1",
             valueInputOption="RAW",
             body={"values": values}
         ).execute()
@@ -321,43 +433,67 @@ def send_dataframe_to_sheets(sheets_service, spreadsheet_id, df):
         append_values = df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
-            range=f"{SHEET_NAME}!A:A",
+            range=f"{SHEET_RESULTS}!A:A",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": append_values}
         ).execute()
-        print("Dados adicionados ao final da planilha.")
+        print(f"{len(append_values)} linhas adicionadas.")
 
 
 # ==============================
 # EXECUÇÃO PRINCIPAL
 # ==============================
 
-all_comments = scrape_instagram_comments()
-
-with open("comments.json", "w", encoding="utf-8") as f:
-    json.dump(all_comments, f, indent=4, ensure_ascii=False)
-
-print("JSON consolidado salvo em comments.json")
-
-df = comments_to_dataframe(all_comments)
-print(df[["Id Comentário", "text", "text_debug", "tem_emoji"]].head(30))
-
-df = classificar_dataframe(df)
-
-tz_br = pytz.timezone("America/Sao_Paulo")
-df["data_execucao"] = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
-
-print("\n--- Classificação finalizada ---")
-print(df[["text", "sentimento_nps", "justificativa"]].head())
-
 drive_service, sheets_service = get_google_services()
-spreadsheet_id = get_or_create_spreadsheet(drive_service)
+spreadsheet_id = get_spreadsheet_id(drive_service)
 
-send_dataframe_to_sheets(
-    sheets_service=sheets_service,
-    spreadsheet_id=spreadsheet_id,
-    df=df
-)
+inputs = read_inputs(sheets_service, spreadsheet_id)
+active_inputs = filter_active_inputs(inputs)
+
+if not active_inputs:
+    print("Nenhuma URL ativa para processar.")
+else:
+    for entry in active_inputs:
+        post_url = entry["url"]
+        perfil = entry["perfil"]
+        hoje_str = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+
+        print(f"\n{'='*50}")
+        print(f"Processando: {perfil} | {post_url}")
+        print(f"{'='*50}")
+
+        # Atualiza status imediatamente (expirado ou ativo)
+        update_input_row(
+            sheets_service, spreadsheet_id,
+            entry["row_index"], entry["status"], hoje_str
+        )
+
+        if entry["status"] == "expirado":
+            print("URL expirada, status atualizado.")
+            continue
+
+        # Busca IDs já salvos
+        saved_ids = get_saved_ids(sheets_service, spreadsheet_id, post_url)
+
+        # Scraping
+        shortcode = post_url  # a API aceita a URL completa como shortcode também
+        all_comments = scrape_instagram_comments(post_url, shortcode)
+
+        # Filtra novos e transforma
+        df = comments_to_dataframe(all_comments, post_url, perfil, saved_ids)
+
+        if df.empty:
+            print("Nenhum comentário novo. Pulando classificação.")
+            continue
+
+        # Classifica
+        df = classificar_dataframe(df)
+        df["data_execucao"] = hoje_str
+
+        # Salva
+        send_dataframe_to_sheets(sheets_service, spreadsheet_id, df)
+
+        print(f"Concluído: {perfil}")
 
 print("\n--- Processo finalizado com sucesso ---")
