@@ -1,41 +1,29 @@
-name: Python CI
+name: Rodar Script Diário
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  schedule:
+    - cron: '30 16 * * *'  # 13h30 horário de Brasília
+  workflow_dispatch:
 
 jobs:
-  build:
+  rodar:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Baixar código
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
 
-      - name: Lint (optional)
-        run: |
-          pip install flake8
-          flake8 . || true
-
-      - name: Run script
+      - name: Executar script
         env:
-          SOCIA_API_KEY: ${{ secrets.SOCIA_API_KEY }}
+          SOCIAVAULT_API_KEY: ${{ secrets.SOCIAVAULT_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          POST_URL: ${{ secrets.POST_URL }}
-          SHORTCODE: ${{ secrets.SHORTCODE }}
-          SERVICE_ACCOUNT_FILE: ${{ secrets.SERVICE_ACCOUNT_FILE }}
-          FOLDER_ID: ${{ secrets.FOLDER_ID }}
-        run: |
-          python script.py
+          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+        run: python script.py
