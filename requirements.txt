@@ -1,4 +1,14 @@
+# Core
 requests
 pandas
+
+# Google APIs
+google-genai
 google-api-python-client
 google-auth
+
+# Timezone
+pytz
+
+# Optional (recommended for env management)
+python-dotenv
