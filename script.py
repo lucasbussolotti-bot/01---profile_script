@@ -405,7 +405,15 @@ def comments_to_dataframe(comments, post_url, perfil, saved_ids):
 # CLASSIFICAÇÃO GEMINI
 # ==============================
 
-def classificar_lote_comentarios(comentarios):
+def extrair_retry_seconds(error_message):
+    """Extrai o tempo de espera sugerido pelo erro do Gemini."""
+    match = re.search(r"retry in ([0-9.]+)s", str(error_message))
+    if match:
+        return float(match.group(1)) + 2  # adiciona 2s de margem
+    return 60  # fallback: espera 60s se não encontrar
+
+
+def classificar_lote_comentarios(comentarios, tentativa=1, max_tentativas=5):
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
 Você é um especialista em análise de sentimentos para redes sociais.
@@ -442,17 +450,30 @@ Comentários para análise:
         "required": ["results"]
     }
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=schema,
-            temperature=0.1
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema=schema,
+                temperature=0.1
+            )
         )
-    )
+        return json.loads(response.text)["results"]
 
-    return json.loads(response.text)["results"]
+    except Exception as e:
+        error_str = str(e)
+        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+            wait_seconds = extrair_retry_seconds(error_str)
+            if tentativa <= max_tentativas:
+                print(f"    Rate limit atingido. Aguardando {wait_seconds:.0f}s antes de tentar novamente (tentativa {tentativa}/{max_tentativas})...")
+                time.sleep(wait_seconds)
+                return classificar_lote_comentarios(comentarios, tentativa=tentativa + 1, max_tentativas=max_tentativas)
+            else:
+                print(f"    Máximo de tentativas atingido para este lote.")
+                raise
+        raise
 
 
 def classificar_dataframe(df):
