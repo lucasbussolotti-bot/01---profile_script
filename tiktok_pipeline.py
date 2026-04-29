@@ -177,7 +177,7 @@ PROFILE_COLS = [
 def processar_perfil(service, username):
     print(f"  [2.0] Buscando dados do perfil: {username}", flush=True)
     try:
-        data = sv_get("profile", {"username": username})
+        data = sv_get("profile", {"handle": username})
     except Exception as e:
         print(f"    Erro ao buscar perfil {username}: {e}", flush=True)
         return None
@@ -218,7 +218,7 @@ POST_COLS = [
 def processar_videos(service, username):
     print(f"  [2.1] Buscando vídeos de: {username}", flush=True)
     try:
-        data = sv_get("videos", {"username": username, "limit": MAX_POSTS})
+        data = sv_get("videos", {"handle": username, "limit": MAX_POSTS})
     except Exception as e:
         print(f"    Erro ao buscar vídeos de {username}: {e}", flush=True)
         return []
