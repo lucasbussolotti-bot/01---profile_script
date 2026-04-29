@@ -413,7 +413,7 @@ def extrair_retry_seconds(error_message):
     return 60  # fallback: espera 60s se não encontrar
 
 
-def classificar_lote_comentarios(comentarios, tentativa=1, max_tentativas=5):
+def classificar_lote_comentarios(comentarios, tentativa=1, max_tentativas=2):
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
 Você é um especialista em análise de sentimentos para redes sociais.
