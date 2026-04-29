@@ -4,6 +4,8 @@ import json
 import time
 import requests
 import pandas as pd
+import sys
+import builtins
 
 from datetime import datetime
 from google import genai
@@ -11,6 +13,14 @@ from google.genai import types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import pytz
+
+# Força flush imediato em todos os prints
+_original_print = builtins.print
+def print(*args, **kwargs):
+    kwargs["flush"] = True
+    _original_print(*args, **kwargs)
+
+API_TIMEOUT = 60  # segundos
 
 # ==============================
 # CONFIGURAÇÕES
@@ -96,7 +106,7 @@ def fetch_posts(handle):
     url = "https://api.sociavault.com/v1/scrape/instagram/posts"
     params = {"handle": handle, "limit": POSTS_LIMIT}
 
-    response = requests.get(url, params=params, headers=headers)
+    response = requests.get(url, params=params, headers=headers, timeout=API_TIMEOUT)
     print(f"  Status posts ({handle}): {response.status_code}")
     response.raise_for_status()
     json_data = response.json()
@@ -260,7 +270,7 @@ def scrape_instagram_comments(post_url, shortcode):
         if cursor:
             params["cursor"] = cursor
 
-        response = requests.get(url, params=params, headers=headers)
+        response = requests.get(url, params=params, headers=headers, timeout=API_TIMEOUT)
         response.raise_for_status()
         data = response.json()
 
@@ -395,10 +405,8 @@ def comments_to_dataframe(comments, post_url, perfil, saved_ids):
 # CLASSIFICAÇÃO GEMINI
 # ==============================
 
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-
 def classificar_lote_comentarios(comentarios):
+    client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
 Você é um especialista em análise de sentimentos para redes sociais.
 Sua tarefa é classificar comentários em 'promotor', 'neutro' ou 'detrator'.
@@ -520,7 +528,24 @@ def main():
     print("INICIANDO PIPELINE INSTAGRAM")
     print("=" * 60)
 
+    # Checagem de variáveis de ambiente
+    print("\n[CONFIG] Verificando variáveis de ambiente...")
+    missing = []
+    for var in ["SOCIAVAULT_API_KEY", "GEMINI_API_KEY", "GDRIVE_CREDENTIALS"]:
+        val = os.environ.get(var)
+        if not val:
+            missing.append(var)
+            print(f"  ERRO: {var} não encontrada!")
+        else:
+            print(f"  OK: {var} ({len(val)} chars)")
+
+    if missing:
+        print(f"\nVariáveis faltando: {missing}. Encerrando.")
+        return
+
+    print("\n[CONFIG] Inicializando Google Services...")
     drive_service, sheets_service = get_google_services()
+    print("  Google Services OK")
 
     # ETAPA 1 — Ler perfis
     print("\n[ETAPA 1] Lendo perfis...")
@@ -616,4 +641,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
