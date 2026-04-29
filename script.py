@@ -1,7 +1,3 @@
-# ==============================
-# SETUP
-# ==============================
-
 import os
 import re
 import json
@@ -16,7 +12,6 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import pytz
 
-
 # ==============================
 # CONFIGURAÇÕES
 # ==============================
@@ -24,13 +19,20 @@ import pytz
 SOCIA_API_KEY = os.environ.get("SOCIAVAULT_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+POSTS_LIMIT = 12
 COMMENTS_LIMIT = 100
 BATCH_SIZE = 20
+POST_EXPIRY_DAYS = 14
 
-SPREADSHEET_NAME = "comments_classificados"
-SHEET_RESULTS = "Sheet1"
-SHEET_INPUTS = "inputs"
-FOLDER_ID = "1OGQOSc23ajvUJ8r0AL6UVZorV87Lws85"
+# Spreadsheet IDs
+SPREADSHEET_PROFILES_ID = "1VK7_oyA3boJaudPaAiwk7xYl6sxReed63eOYBP9ahxo"
+SPREADSHEET_DATA_PROFILE_ID = "1S86wWk2yO525qC0JQ6IZ6G5gFCYhzzn4Ny6TwZC2E98"
+SPREADSHEET_DATA_COMMENTS_ID = "1orR6-MXGNajad6q5IP1dakAPQMM5lyUMX-718YbQzhI"
+
+# Sheet names
+SHEET_PROFILES = "instagram_profile"
+SHEET_DATA_PROFILE = "data_profile"
+SHEET_DATA_COMMENTS = "data_comments"
 
 tz_br = pytz.timezone("America/Sao_Paulo")
 
@@ -53,140 +55,192 @@ def get_google_services():
     return drive_service, sheets_service
 
 
-def get_spreadsheet_id(drive_service):
-    query = (
-        f"name='{SPREADSHEET_NAME}' and "
-        f"mimeType='application/vnd.google-apps.spreadsheet' and "
-        f"'{FOLDER_ID}' in parents and trashed=false"
-    )
-    existing = drive_service.files().list(
-        q=query,
-        fields="files(id, name)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-    files = existing.get("files", [])
-    if not files:
-        raise Exception(f"Planilha '{SPREADSHEET_NAME}' não encontrada.")
-    return files[0]["id"]
-
-
 # ==============================
-# LER ABA INPUTS
+# ETAPA 1 — LER PERFIS
 # ==============================
 
-def read_inputs(sheets_service, spreadsheet_id):
+def read_profiles(sheets_service):
     result = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"{SHEET_INPUTS}!A:E"
+        spreadsheetId=SPREADSHEET_PROFILES_ID,
+        range=f"{SHEET_PROFILES}!A:B"
     ).execute()
 
     rows = result.get("values", [])
     if len(rows) <= 1:
-        print("Nenhuma entrada na aba inputs.")
+        print("Nenhum perfil encontrado na planilha instagram_profile.")
         return []
 
-    headers = rows[0]
-    inputs = []
-    for i, row in enumerate(rows[1:], start=2):  # linha real no Sheets (começa em 2)
-        while len(row) < 5:
-            row.append("")
-        entry = {
-            "row_index": i,
-            "url": row[0].strip(),
-            "perfil": row[1].strip(),
-            "data_insercao": row[2].strip(),
-            "status": row[3].strip().lower(),
-            "ultima_execucao": row[4].strip()
-        }
-        inputs.append(entry)
+    headers = [h.strip().lower() for h in rows[0]]
+    profiles = []
 
-    return inputs
-
-
-def filter_active_inputs(inputs):
-    hoje = datetime.now(tz_br).date()
-    ativos = []
-
-    for entry in inputs:
-        if entry["status"] == "expirado":
-            continue
-
-        try:
-            data_insercao = datetime.strptime(entry["data_insercao"], "%Y-%m-%d").date()
-        except ValueError:
-            print(f"Data inválida para {entry['url']}, pulando.")
-            continue
-
-        dias_ativos = (hoje - data_insercao).days
-        if dias_ativos > 14:
-            print(f"URL expirada: {entry['url']}")
-            entry["status"] = "expirado"
-            ativos.append(entry)  # ainda adiciona para atualizar o status
-        else:
-            entry["status"] = "ativo"
-            ativos.append(entry)
-
-    return ativos
-
-
-# ==============================
-# ATUALIZAR ABA INPUTS
-# ==============================
-
-def update_input_row(sheets_service, spreadsheet_id, row_index, status, ultima_execucao):
-    range_status = f"{SHEET_INPUTS}!D{row_index}"
-    range_execucao = f"{SHEET_INPUTS}!E{row_index}"
-
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=range_status,
-        valueInputOption="RAW",
-        body={"values": [[status]]}
-    ).execute()
-
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=range_execucao,
-        valueInputOption="RAW",
-        body={"values": [[ultima_execucao]]}
-    ).execute()
-
-
-# ==============================
-# BUSCAR IDs JÁ SALVOS
-# ==============================
-
-def get_saved_ids(sheets_service, spreadsheet_id, post_url):
-    result = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"{SHEET_RESULTS}!A:Z"
-    ).execute()
-
-    rows = result.get("values", [])
-    if len(rows) <= 1:
-        return set()
-
-    headers = rows[0]
-    if "id" not in headers or "post_url" not in headers:
-        return set()
-
-    id_col = headers.index("id")
-    url_col = headers.index("post_url")
-
-    saved_ids = set()
     for row in rows[1:]:
-        if len(row) > max(id_col, url_col):
-            if row[url_col].strip() == post_url.strip():
-                saved_ids.add(row[id_col].strip())
+        while len(row) < len(headers):
+            row.append("")
+        entry = dict(zip(headers, row))
+        profile = entry.get("profile", "").strip()
+        date_added = entry.get("date added", "").strip()
+        if profile:
+            profiles.append({"profile": profile, "date_added": date_added})
 
-    print(f"IDs já salvos para {post_url}: {len(saved_ids)}")
-    return saved_ids
+    print(f"{len(profiles)} perfil(is) encontrado(s): {[p['profile'] for p in profiles]}")
+    return profiles
 
 
 # ==============================
-# SCRAPING DE COMENTÁRIOS
+# ETAPA 2 — EXTRAIR POSTS (Script 1 adaptado)
 # ==============================
+
+def fetch_posts(handle):
+    api_key = SOCIA_API_KEY
+    headers = {"X-API-Key": api_key}
+    url = "https://api.sociavault.com/v1/scrape/instagram/posts"
+    params = {"handle": handle, "limit": POSTS_LIMIT}
+
+    response = requests.get(url, params=params, headers=headers)
+    print(f"  Status posts ({handle}): {response.status_code}")
+    response.raise_for_status()
+    json_data = response.json()
+
+    items = json_data.get("data", {}).get("items", {})
+    top_username = json_data.get("data", {}).get("user", {}).get("username")
+
+    run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+
+    rows = []
+    if isinstance(items, dict):
+        iterable = list(items.values())
+    elif isinstance(items, list):
+        iterable = items
+    else:
+        iterable = []
+
+    # Garante apenas os primeiros 12
+    iterable = iterable[:POSTS_LIMIT]
+
+    for item in iterable:
+        username = item.get("user", {}).get("username", top_username)
+        code = item.get("code")
+        taken_at = item.get("taken_at")
+        post_url = item.get("url")
+
+        if not post_url and code:
+            post_url = f"https://www.instagram.com/p/{code}/"
+
+        media_type = item.get("media_type")
+        comment_count = item.get("comment_count")
+        like_count = item.get("like_count")
+        play_count = item.get("play_count")
+
+        image_versions2 = item.get("image_versions2", {})
+        candidates = image_versions2.get("candidates", {})
+        preview_image_url = None
+
+        if isinstance(candidates, dict):
+            best_candidate = candidates.get("0") or next(iter(candidates.values()), {})
+            preview_image_url = best_candidate.get("url")
+        elif isinstance(candidates, list) and len(candidates) > 0:
+            preview_image_url = candidates[0].get("url")
+
+        additional_candidates = image_versions2.get("additional_candidates", {})
+        first_frame_url = None
+        if additional_candidates and isinstance(additional_candidates, dict):
+            first_frame_url = additional_candidates.get("first_frame", {}).get("url")
+
+        rows.append({
+            "run_datetime": run_datetime,
+            "username": username,
+            "code": code,
+            "taken_at": taken_at,
+            "url": post_url,
+            "media_type": media_type,
+            "comment_count": comment_count,
+            "like_count": like_count,
+            "play_count": play_count,
+            "preview_image_url": preview_image_url,
+            "first_frame_url": first_frame_url,
+            "first_extracted_at": run_datetime  # nova coluna
+        })
+
+    df = pd.DataFrame(rows)
+    df = df.fillna("")
+    print(f"  Posts extraídos: {len(df)}")
+    return df
+
+
+def get_saved_post_codes(sheets_service):
+    """Retorna dict {code: first_extracted_at} já salvos no data_profile."""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
+            range=f"{SHEET_DATA_PROFILE}!A:Z"
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) <= 1:
+            return {}
+        headers = rows[0]
+        if "code" not in headers:
+            return {}
+        code_col = headers.index("code")
+        extracted_col = headers.index("first_extracted_at") if "first_extracted_at" in headers else None
+        saved = {}
+        for row in rows[1:]:
+            if len(row) > code_col:
+                code = row[code_col].strip()
+                first_extracted = row[extracted_col].strip() if extracted_col and len(row) > extracted_col else ""
+                if code:
+                    saved[code] = first_extracted
+        return saved
+    except Exception as e:
+        print(f"  Aviso ao ler data_profile: {e}")
+        return {}
+
+
+def save_posts_to_sheets(sheets_service, df):
+    df = df.fillna("")
+
+    existing_data = sheets_service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
+        range=f"{SHEET_DATA_PROFILE}!A:A"
+    ).execute()
+    existing_rows = existing_data.get("values", [])
+
+    if not existing_rows:
+        values = [df.columns.tolist()] + df.astype(str).values.tolist()
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
+            range=f"{SHEET_DATA_PROFILE}!A1",
+            valueInputOption="RAW",
+            body={"values": values}
+        ).execute()
+        print(f"  data_profile: {len(df)} linhas inseridas com cabeçalho.")
+    else:
+        append_values = df.astype(str).values.tolist()
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
+            range=f"{SHEET_DATA_PROFILE}!A:A",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": append_values}
+        ).execute()
+        print(f"  data_profile: {len(append_values)} linhas adicionadas.")
+
+
+# ==============================
+# ETAPA 3 — COMENTÁRIOS (Script 2 adaptado)
+# ==============================
+
+def is_post_expired(first_extracted_at_str):
+    """Retorna True se o post foi extraído há mais de 14 dias."""
+    if not first_extracted_at_str:
+        return False
+    try:
+        first_extracted = datetime.strptime(first_extracted_at_str, "%Y-%m-%d %H:%M:%S")
+        first_extracted = tz_br.localize(first_extracted)
+        hoje = datetime.now(tz_br)
+        return (hoje - first_extracted).days > POST_EXPIRY_DAYS
+    except Exception:
+        return False
+
 
 def scrape_instagram_comments(post_url, shortcode):
     url = "https://api.sociavault.com/v1/scrape/instagram/comments"
@@ -218,8 +272,7 @@ def scrape_instagram_comments(post_url, shortcode):
 
         page_comments = normalize_comments(items, page)
         all_comments.extend(page_comments)
-
-        print(f"Página {page}: {len(page_comments)} comentários")
+        print(f"    Página {page}: {len(page_comments)} comentários")
 
         cursor = (
             data.get("data", {}).get("data", {}).get("cursor")
@@ -253,10 +306,6 @@ def normalize_comments(items, page):
     return comments
 
 
-# ==============================
-# TRANSFORMAR EM DATAFRAME
-# ==============================
-
 def has_emoji(text):
     emoji_pattern = re.compile(
         "["
@@ -271,6 +320,32 @@ def has_emoji(text):
         flags=re.UNICODE,
     )
     return bool(emoji_pattern.search(text))
+
+
+def get_saved_comment_ids(sheets_service, post_url):
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_DATA_COMMENTS_ID,
+            range=f"{SHEET_DATA_COMMENTS}!A:Z"
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) <= 1:
+            return set()
+        headers = rows[0]
+        if "id" not in headers or "post_url" not in headers:
+            return set()
+        id_col = headers.index("id")
+        url_col = headers.index("post_url")
+        saved_ids = set()
+        for row in rows[1:]:
+            if len(row) > max(id_col, url_col):
+                if row[url_col].strip() == post_url.strip():
+                    saved_ids.add(row[id_col].strip())
+        print(f"    IDs já salvos para {post_url}: {len(saved_ids)}")
+        return saved_ids
+    except Exception as e:
+        print(f"    Aviso ao ler data_comments: {e}")
+        return set()
 
 
 def comments_to_dataframe(comments, post_url, perfil, saved_ids):
@@ -301,7 +376,7 @@ def comments_to_dataframe(comments, post_url, perfil, saved_ids):
             "is_verified": user.get("is_verified")
         })
 
-    print(f"Comentários novos: {len(rows)} | Já salvos (ignorados): {skipped}")
+    print(f"    Comentários novos: {len(rows)} | Já salvos (ignorados): {skipped}")
 
     if not rows:
         return pd.DataFrame()
@@ -374,7 +449,7 @@ Comentários para análise:
 
 def classificar_dataframe(df):
     resultados = []
-    print(f"Iniciando classificação de {len(df)} comentários...")
+    print(f"    Classificando {len(df)} comentários...")
 
     for i in range(0, len(df), BATCH_SIZE):
         lote = df.iloc[i:i + BATCH_SIZE]
@@ -386,9 +461,9 @@ def classificar_dataframe(df):
         try:
             classificados = classificar_lote_comentarios(comentarios_lote)
             resultados.extend(classificados)
-            print(f"Lote {i // BATCH_SIZE + 1} OK")
+            print(f"    Lote {i // BATCH_SIZE + 1} OK")
         except Exception as e:
-            print(f"Erro no lote {i // BATCH_SIZE + 1}: {e}")
+            print(f"    Erro no lote {i // BATCH_SIZE + 1}: {e}")
             for item in comentarios_lote:
                 resultados.append({
                     "Id Comentário": item["Id Comentário"],
@@ -406,94 +481,139 @@ def classificar_dataframe(df):
     return df
 
 
-# ==============================
-# SALVAR NO SHEETS
-# ==============================
-
-def send_dataframe_to_sheets(sheets_service, spreadsheet_id, df):
+def save_comments_to_sheets(sheets_service, df):
     df = df.fillna("")
 
     existing_data = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"{SHEET_RESULTS}!A:A"
+        spreadsheetId=SPREADSHEET_DATA_COMMENTS_ID,
+        range=f"{SHEET_DATA_COMMENTS}!A:A"
     ).execute()
-
     existing_rows = existing_data.get("values", [])
 
     if not existing_rows:
         values = [df.columns.tolist()] + df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"{SHEET_RESULTS}!A1",
+            spreadsheetId=SPREADSHEET_DATA_COMMENTS_ID,
+            range=f"{SHEET_DATA_COMMENTS}!A1",
             valueInputOption="RAW",
             body={"values": values}
         ).execute()
-        print("Dados inseridos com cabeçalho.")
+        print(f"    data_comments: {len(df)} linhas inseridas com cabeçalho.")
     else:
         append_values = df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range=f"{SHEET_RESULTS}!A:A",
+            spreadsheetId=SPREADSHEET_DATA_COMMENTS_ID,
+            range=f"{SHEET_DATA_COMMENTS}!A:A",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": append_values}
         ).execute()
-        print(f"{len(append_values)} linhas adicionadas.")
+        print(f"    data_comments: {len(append_values)} linhas adicionadas.")
 
 
 # ==============================
 # EXECUÇÃO PRINCIPAL
 # ==============================
 
-drive_service, sheets_service = get_google_services()
-spreadsheet_id = get_spreadsheet_id(drive_service)
+def main():
+    print("=" * 60)
+    print("INICIANDO PIPELINE INSTAGRAM")
+    print("=" * 60)
 
-inputs = read_inputs(sheets_service, spreadsheet_id)
-active_inputs = filter_active_inputs(inputs)
+    drive_service, sheets_service = get_google_services()
 
-if not active_inputs:
-    print("Nenhuma URL ativa para processar.")
-else:
-    for entry in active_inputs:
-        post_url = entry["url"]
-        perfil = entry["perfil"]
-        hoje_str = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+    # ETAPA 1 — Ler perfis
+    print("\n[ETAPA 1] Lendo perfis...")
+    profiles = read_profiles(sheets_service)
 
-        print(f"\n{'='*50}")
-        print(f"Processando: {perfil} | {post_url}")
-        print(f"{'='*50}")
+    if not profiles:
+        print("Nenhum perfil para processar. Encerrando.")
+        return
 
-        # Atualiza status imediatamente (expirado ou ativo)
-        update_input_row(
-            sheets_service, spreadsheet_id,
-            entry["row_index"], entry["status"], hoje_str
-        )
+    # Carrega códigos já salvos no data_profile (para deduplicação)
+    saved_post_codes = get_saved_post_codes(sheets_service)
+    print(f"Posts já salvos no data_profile: {len(saved_post_codes)}")
 
-        if entry["status"] == "expirado":
-            print("URL expirada, status atualizado.")
+    for profile_entry in profiles:
+        handle = profile_entry["profile"]
+        print(f"\n{'=' * 60}")
+        print(f"PERFIL: {handle}")
+        print(f"{'=' * 60}")
+
+        # ETAPA 2 — Extrair posts
+        print(f"\n[ETAPA 2] Extraindo posts de @{handle}...")
+        try:
+            df_posts = fetch_posts(handle)
+        except Exception as e:
+            print(f"  ERRO ao buscar posts de @{handle}: {e}. Pulando perfil.")
             continue
 
-        # Busca IDs já salvos
-        saved_ids = get_saved_ids(sheets_service, spreadsheet_id, post_url)
-
-        # Scraping
-        shortcode = post_url  # a API aceita a URL completa como shortcode também
-        all_comments = scrape_instagram_comments(post_url, shortcode)
-
-        # Filtra novos e transforma
-        df = comments_to_dataframe(all_comments, post_url, perfil, saved_ids)
-
-        if df.empty:
-            print("Nenhum comentário novo. Pulando classificação.")
+        if df_posts.empty:
+            print(f"  Nenhum post encontrado para @{handle}. Pulando.")
             continue
 
-        # Classifica
-        df = classificar_dataframe(df)
-        df["data_execucao"] = hoje_str
+        # Filtra posts já salvos (deduplicação por code)
+        new_posts = df_posts[~df_posts["code"].isin(saved_post_codes.keys())]
+        already_saved = df_posts[df_posts["code"].isin(saved_post_codes.keys())]
 
-        # Salva
-        send_dataframe_to_sheets(sheets_service, spreadsheet_id, df)
+        print(f"  Posts novos: {len(new_posts)} | Já salvos (ignorados): {len(already_saved)}")
 
-        print(f"Concluído: {perfil}")
+        if not new_posts.empty:
+            save_posts_to_sheets(sheets_service, new_posts)
+            # Atualiza o dict local com os novos posts
+            hoje_str = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+            for code in new_posts["code"].tolist():
+                saved_post_codes[code] = hoje_str
 
-print("\n--- Processo finalizado com sucesso ---")
+        # ETAPA 3 — Processar comentários de cada post
+        print(f"\n[ETAPA 3] Processando comentários dos posts de @{handle}...")
+
+        for _, post_row in df_posts.iterrows():
+            post_url = post_row.get("url", "")
+            post_code = post_row.get("code", "")
+
+            if not post_url:
+                print(f"  Post sem URL (code={post_code}), pulando.")
+                continue
+
+            # Verifica expiração (14 dias desde first_extracted_at)
+            first_extracted_at = saved_post_codes.get(post_code, "")
+            if is_post_expired(first_extracted_at):
+                print(f"  Post expirado (>14 dias): {post_url}. Pulando.")
+                continue
+
+            print(f"\n  Post: {post_url}")
+
+            try:
+                # Busca IDs já salvos para esse post
+                saved_ids = get_saved_comment_ids(sheets_service, post_url)
+
+                # Scraping de comentários
+                all_comments = scrape_instagram_comments(post_url, post_url)
+
+                # Filtra novos e transforma
+                df_comments = comments_to_dataframe(all_comments, post_url, handle, saved_ids)
+
+                if df_comments.empty:
+                    print("    Nenhum comentário novo. Pulando classificação.")
+                    continue
+
+                # Classifica com Gemini
+                df_comments = classificar_dataframe(df_comments)
+                df_comments["data_execucao"] = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+
+                # Salva no data_comments
+                save_comments_to_sheets(sheets_service, df_comments)
+
+            except Exception as e:
+                print(f"    ERRO ao processar comentários de {post_url}: {e}. Pulando post.")
+                continue
+
+    print(f"\n{'=' * 60}")
+    print("PIPELINE FINALIZADO COM SUCESSO")
+    print(f"{'=' * 60}")
+
+
+if __name__ == "__main__":
+    main()
+
