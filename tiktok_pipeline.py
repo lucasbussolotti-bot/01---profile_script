@@ -185,19 +185,23 @@ def processar_perfil(service, username):
     # Garante cabeçalho
     ensure_header(service, SHEET_TT_DATA_PROFILE_ID, TAB_TT_DATA_PROFILE, PROFILE_COLS)
 
-    # Sempre insere nova linha para manter histórico de evolução
+    # A API retorna: {"data": {"user": {...}, "statsV2": {...}}}
+    inner = data.get("data", data)
+    user  = inner.get("user", {})
+    stats = inner.get("statsV2", inner.get("stats", {}))
+
     row = {
-        "user_id": str(data.get("user_id", data.get("id", ""))),
-        "username": data.get("username", username),
-        "nickname": data.get("nickname", ""),
-        "verified": data.get("verified", ""),
-        "followers": data.get("followers", data.get("follower_count", "")),
-        "following": data.get("following", data.get("following_count", "")),
-        "likes": data.get("likes", data.get("heart_count", "")),
-        "videos": data.get("videos", data.get("video_count", "")),
-        "bio": data.get("bio", data.get("signature", "")),
-        "language": data.get("language", ""),
-        "is_organization": data.get("is_organization", ""),
+        "user_id": str(user.get("id", "")),
+        "username": user.get("uniqueId", username),
+        "nickname": user.get("nickname", ""),
+        "verified": user.get("verified", ""),
+        "followers": stats.get("followerCount", ""),
+        "following": stats.get("followingCount", ""),
+        "likes": stats.get("heartCount", ""),
+        "videos": stats.get("videoCount", ""),
+        "bio": user.get("signature", ""),
+        "language": user.get("language", ""),
+        "is_organization": user.get("isOrganization", ""),
         "run_datetime": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     }
     df_row = pd.DataFrame([row])[PROFILE_COLS]
@@ -351,9 +355,17 @@ def processar_comentarios(service, client, post):
         print(f"      Erro ao buscar comentários do vídeo {video_id}: {e}", flush=True)
         return
 
-    comments = data if isinstance(data, list) else data.get("comments", data.get("items", []))
+    # A API retorna: {"data": {"comments": {"0": {...}, "1": {...}}}}
+    inner = data.get("data", data)
+    raw = inner.get("comments", data.get("comments", []))
+    if isinstance(raw, dict):
+        comments = list(raw.values())
+    elif isinstance(raw, list):
+        comments = raw
+    else:
+        comments = []
 
-    novos = [c for c in comments if str(c.get("comment_id", c.get("id", ""))) not in existing_ids]
+    novos = [c for c in comments if str(c.get("cid", c.get("comment_id", c.get("id", "")))) not in existing_ids]
     if not novos:
         print(f"      Sem comentários novos para vídeo {video_id}.", flush=True)
         return
@@ -370,17 +382,18 @@ def processar_comentarios(service, client, post):
 
         for j, c in enumerate(lote):
             clf = classificacoes[j] if j < len(classificacoes) else {"classification": "ERRO", "classification_reason": "sem resposta"}
+            c_user = c.get("user", {})
             row = {
-                "comment_id": str(c.get("comment_id", c.get("id", ""))),
+                "comment_id": str(c.get("cid", c.get("comment_id", c.get("id", "")))),
                 "video_id": video_id,
-                "text": c.get("text", c.get("comment", "")),
-                "create_time": c.get("create_time", c.get("createTime", "")),
-                "likes": c.get("likes", c.get("digg_count", "")),
-                "replies_count": c.get("replies_count", c.get("reply_count", "")),
-                "purchase_intent": c.get("purchase_intent", ""),
-                "user_name": c.get("user_name", c.get("nickname", "")),
-                "username": c.get("username", c.get("unique_id", "")),
-                "language": c.get("language", ""),
+                "text": c.get("text", ""),
+                "create_time": c.get("create_time", ""),
+                "likes": c.get("digg_count", c.get("likes", "")),
+                "replies_count": c.get("reply_comment_total", c.get("replies_count", "")),
+                "purchase_intent": c.get("is_high_purchase_intent", ""),
+                "user_name": c_user.get("nickname", c.get("user_name", "")),
+                "username": c_user.get("unique_id", c.get("username", "")),
+                "language": c.get("comment_language", c.get("language", "")),
                 "classification": clf.get("classification", ""),
                 "classification_reason": clf.get("classification_reason", "")
             }
