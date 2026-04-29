@@ -223,8 +223,23 @@ def processar_videos(service, username):
         print(f"    Erro ao buscar vídeos de {username}: {e}", flush=True)
         return []
 
-    videos = data if isinstance(data, list) else data.get("videos", data.get("items", []))
-    videos = videos[:MAX_POSTS]
+    # A API retorna: {"success": true, "data": {"aweme_list": {"0": {...}, "1": {...}}}}
+    raw_list = None
+    if isinstance(data, list):
+        raw_list = data
+    else:
+        inner = data.get("data", data)
+        aweme_list = inner.get("aweme_list", None)
+        if aweme_list is not None:
+            # aweme_list pode ser dict com chaves "0","1"... ou lista
+            if isinstance(aweme_list, dict):
+                raw_list = list(aweme_list.values())
+            else:
+                raw_list = aweme_list
+        else:
+            raw_list = inner.get("videos", inner.get("items", []))
+
+    videos = raw_list[:MAX_POSTS] if raw_list else []
 
     if not videos:
         print(f"    Nenhum vídeo encontrado para {username}.", flush=True)
@@ -241,23 +256,40 @@ def processar_videos(service, username):
     novos = []
 
     for v in videos:
-        video_id = str(v.get("video_id", v.get("id", "")))
+        # ID do vídeo: aweme_id ou video_id ou id
+        video_id = str(v.get("aweme_id", v.get("video_id", v.get("id", ""))))
         if video_id in existing_ids:
             continue
 
-        video_url = v.get("video_url", v.get("url", f"https://www.tiktok.com/@{username}/video/{video_id}"))
+        # Author vem como objeto aninhado
+        author_obj = v.get("author", {})
+        if isinstance(author_obj, dict):
+            author_name = author_obj.get("nickname", "")
+            follower_count = author_obj.get("follower_count", "")
+        else:
+            author_name = author_obj
+            follower_count = v.get("followers", "")
+
+        # Stats vêm em statistics
+        stats = v.get("statistics", {})
+        likes    = stats.get("digg_count", v.get("likes", ""))
+        comments = stats.get("comment_count", v.get("comments", ""))
+        views    = stats.get("play_count", v.get("views", ""))
+        shares   = stats.get("share_count", v.get("shares", ""))
+
+        video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
 
         row = {
             "video_id": video_id,
-            "description": v.get("description", v.get("desc", "")),
+            "description": v.get("desc", v.get("description", "")),
             "create_time": v.get("create_time", v.get("createTime", "")),
-            "author": v.get("author", v.get("nickname", "")),
+            "author": author_name,
             "username": username,
-            "followers": v.get("followers", v.get("follower_count", "")),
-            "likes": v.get("likes", v.get("digg_count", "")),
-            "comments": v.get("comments", v.get("comment_count", "")),
-            "views": v.get("views", v.get("play_count", "")),
-            "shares": v.get("shares", v.get("share_count", "")),
+            "followers": follower_count,
+            "likes": likes,
+            "comments": comments,
+            "views": views,
+            "shares": shares,
             "first_extracted_at": now_str,
             "video_url": video_url
         }
@@ -272,7 +304,7 @@ def processar_videos(service, username):
 
     # Retorna todos os 12 (inclusive já existentes) com video_url e first_extracted_at
     all_df = read_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST)
-    ids_perfil = [str(v.get("video_id", v.get("id", ""))) for v in videos]
+    ids_perfil = [str(v.get("aweme_id", v.get("video_id", v.get("id", "")))) for v in videos]
     if not all_df.empty and "video_id" in all_df.columns:
         return all_df[all_df["video_id"].isin(ids_perfil)].to_dict("records")
     return []
