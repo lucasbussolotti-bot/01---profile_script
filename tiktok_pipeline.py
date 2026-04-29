@@ -158,7 +158,9 @@ def ler_perfis(service):
     if df.empty or "profile" not in df.columns:
         print("  Nenhum perfil encontrado.", flush=True)
         return []
-    perfis = df[["profile", "date_added"]].dropna(subset=["profile"]).to_dict("records")
+    col_date = "date added" if "date added" in df.columns else "date_added" if "date_added" in df.columns else None
+    cols = ["profile"] + ([col_date] if col_date else [])
+    perfis = df[cols].dropna(subset=["profile"]).to_dict("records")
     print(f"  {len(perfis)} perfil(is) encontrado(s).", flush=True)
     return perfis
 
