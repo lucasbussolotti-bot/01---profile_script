@@ -93,7 +93,7 @@ def ensure_header(service, spreadsheet_id, tab, columns):
 # ==============================
 
 def sv_get(endpoint, params, timeout=60):
-    headers = {"Authorization": f"Bearer {SOCIAVAULT_API_KEY}"}
+    headers = {"X-API-Key": SOCIAVAULT_API_KEY}
     resp = requests.get(
         f"{API_BASE}/{endpoint}",
         headers=headers,
