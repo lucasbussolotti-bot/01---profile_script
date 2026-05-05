@@ -56,7 +56,6 @@ def read_sheet(service, spreadsheet_id, tab):
         return pd.DataFrame()
     headers = values[0]
     rows = values[1:]
-    # Pad rows shorter than headers
     rows = [r + [""] * (len(headers) - len(r)) for r in rows]
     return pd.DataFrame(rows, columns=headers)
 
@@ -182,10 +181,8 @@ def processar_perfil(service, username):
         print(f"    Erro ao buscar perfil {username}: {e}", flush=True)
         return None
 
-    # Garante cabeçalho
     ensure_header(service, SHEET_TT_DATA_PROFILE_ID, TAB_TT_DATA_PROFILE, PROFILE_COLS)
 
-    # A API retorna: {"data": {"user": {...}, "statsV2": {...}}}
     inner = data.get("data", data)
     user  = inner.get("user", {})
     stats = inner.get("statsV2", inner.get("stats", {}))
@@ -206,8 +203,12 @@ def processar_perfil(service, username):
     }
     df_row = pd.DataFrame([row])[PROFILE_COLS]
     append_to_sheet(service, SHEET_TT_DATA_PROFILE_ID, TAB_TT_DATA_PROFILE, df_row)
-    print(f"    Perfil {username} salvo no tt_data_profile.", flush=True)
-    return data
+
+    # Extrai o handle real retornado pela API (ex: "jmenaoficial" em vez de "Jmena")
+    real_handle = user.get("uniqueId", username)
+    print(f"    Perfil {username} salvo no tt_data_profile. Handle real: {real_handle}", flush=True)
+
+    return data, real_handle
 
 # ==============================
 # ETAPA 2.1 — VÍDEOS / POSTS
@@ -227,7 +228,6 @@ def processar_videos(service, username):
         print(f"    Erro ao buscar vídeos de {username}: {e}", flush=True)
         return []
 
-    # A API retorna: {"success": true, "data": {"aweme_list": {"0": {...}, "1": {...}}}}
     raw_list = None
     if isinstance(data, list):
         raw_list = data
@@ -235,7 +235,6 @@ def processar_videos(service, username):
         inner = data.get("data", data)
         aweme_list = inner.get("aweme_list", None)
         if aweme_list is not None:
-            # aweme_list pode ser dict com chaves "0","1"... ou lista
             if isinstance(aweme_list, dict):
                 raw_list = list(aweme_list.values())
             else:
@@ -249,10 +248,8 @@ def processar_videos(service, username):
         print(f"    Nenhum vídeo encontrado para {username}.", flush=True)
         return []
 
-    # Garante cabeçalho
     ensure_header(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST, POST_COLS)
 
-    # Lê existentes para deduplicar por video_id
     existing_df = read_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST)
     existing_ids = set(existing_df["video_id"].astype(str).tolist()) if not existing_df.empty and "video_id" in existing_df.columns else set()
 
@@ -260,12 +257,10 @@ def processar_videos(service, username):
     novos = []
 
     for v in videos:
-        # ID do vídeo: aweme_id ou video_id ou id
         video_id = str(v.get("aweme_id", v.get("video_id", v.get("id", ""))))
         if video_id in existing_ids:
             continue
 
-        # Author vem como objeto aninhado
         author_obj = v.get("author", {})
         if isinstance(author_obj, dict):
             author_name = author_obj.get("nickname", "")
@@ -274,7 +269,6 @@ def processar_videos(service, username):
             author_name = author_obj
             follower_count = v.get("followers", "")
 
-        # Stats vêm em statistics
         stats = v.get("statistics", {})
         likes    = stats.get("digg_count", v.get("likes", ""))
         comments = stats.get("comment_count", v.get("comments", ""))
@@ -306,7 +300,6 @@ def processar_videos(service, username):
     else:
         print(f"    Nenhum vídeo novo para {username}.", flush=True)
 
-    # Retorna todos os 12 (inclusive já existentes) com video_url e first_extracted_at
     all_df = read_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST)
     ids_perfil = [str(v.get("aweme_id", v.get("video_id", v.get("id", "")))) for v in videos]
     if not all_df.empty and "video_id" in all_df.columns:
@@ -329,7 +322,6 @@ def processar_comentarios(service, client, post):
     video_url = post.get("video_url", "")
     first_extracted = post.get("first_extracted_at", "")
 
-    # Checar 14 dias
     try:
         extracted_dt = datetime.strptime(first_extracted, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         dias = (datetime.now(timezone.utc) - extracted_dt).days
@@ -341,21 +333,17 @@ def processar_comentarios(service, client, post):
 
     print(f"    [2.2] Buscando comentários do vídeo: {video_url}", flush=True)
 
-    # Lê IDs já salvos
     existing_df = read_sheet(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS)
     existing_ids = set(existing_df["comment_id"].astype(str).tolist()) if not existing_df.empty and "comment_id" in existing_df.columns else set()
 
-    # Garante cabeçalho
     ensure_header(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, COMMENT_COLS)
 
-    # Buscar comentários
     try:
         data = sv_get("comments", {"url": video_url})
     except Exception as e:
         print(f"      Erro ao buscar comentários do vídeo {video_id}: {e}", flush=True)
         return
 
-    # A API retorna: {"data": {"comments": {"0": {...}, "1": {...}}}}
     inner = data.get("data", data)
     raw = inner.get("comments", data.get("comments", []))
     if isinstance(raw, dict):
@@ -372,7 +360,6 @@ def processar_comentarios(service, client, post):
 
     print(f"      {len(novos)} comentário(s) novo(s) para classificar.", flush=True)
 
-    # Classificar em lotes
     all_rows = []
     for i in range(0, len(novos), GEMINI_BATCH):
         lote = novos[i:i + GEMINI_BATCH]
@@ -412,7 +399,6 @@ def processar_comentarios(service, client, post):
 def main():
     print("=== TikTok Pipeline ===", flush=True)
 
-    # Checar variáveis de ambiente
     print(f"SOCIAVAULT_API_KEY: {'OK' if SOCIAVAULT_API_KEY else 'FALTANDO'}", flush=True)
     print(f"GEMINI_API_KEY:     {'OK' if GEMINI_API_KEY else 'FALTANDO'}", flush=True)
     print(f"GDRIVE_CREDENTIALS: {'OK' if GDRIVE_CREDENTIALS else 'FALTANDO'}", flush=True)
@@ -438,22 +424,26 @@ def main():
         print(f"PERFIL: @{username}", flush=True)
         print(f"{'='*40}", flush=True)
 
-        # ETAPA 2.0 — Dados do perfil
+        # ETAPA 2.0 — Dados do perfil + captura do handle real
         try:
-            processar_perfil(service, username)
+            result = processar_perfil(service, username)
+            if result is None:
+                print(f"  Perfil {username} não retornou dados. Pulando.", flush=True)
+                continue
+            _, real_handle = result
         except Exception as e:
             print(f"  Erro em 2.0 para {username}: {e}. Pulando.", flush=True)
             continue
 
-        # ETAPA 2.1 — Vídeos
+        # ETAPA 2.1 — Vídeos usando o handle real da API
         try:
-            posts = processar_videos(service, username)
+            posts = processar_videos(service, real_handle)
         except Exception as e:
-            print(f"  Erro em 2.1 para {username}: {e}. Pulando.", flush=True)
+            print(f"  Erro em 2.1 para {real_handle}: {e}. Pulando.", flush=True)
             continue
 
         if not posts:
-            print(f"  Sem posts para processar comentários de {username}.", flush=True)
+            print(f"  Sem posts para processar comentários de {real_handle}.", flush=True)
             continue
 
         # ETAPA 2.2 — Comentários de cada vídeo
