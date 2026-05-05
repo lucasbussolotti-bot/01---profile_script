@@ -108,7 +108,7 @@ def fetch_profile(handle):
 
     user = (
     data.get("data", {})
-        .get("data", {})   # 👈 ESSE É O AJUSTE
+        .get("data", {})
         .get("user")
     or data.get("user")
     or {}
@@ -120,7 +120,6 @@ def fetch_profile(handle):
         "following_count": user.get("edge_follow", {}).get("count", ""),
         "total_posts_count": user.get("edge_owner_to_timeline_media", {}).get("count", "")
     }
-
 
 
 # ==============================
@@ -207,6 +206,7 @@ def fetch_posts(handle):
             "play_count": play_count,
             "preview_image_url": preview_image_url,
             "first_frame_url": first_frame_url,
+            "post_caption": "",  # será preenchido na etapa 3
             "first_extracted_at": run_datetime
         })
 
@@ -217,9 +217,7 @@ def fetch_posts(handle):
 
 
 def get_saved_post_codes(sheets_service):
-    """Retorna dict {code: first_extracted_at} já salvos no data_profile.
-    Usado apenas para controlar a expiração de 14 dias dos comentários.
-    """
+    """Retorna dict {code: first_extracted_at} já salvos no data_profile."""
     try:
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
@@ -238,7 +236,6 @@ def get_saved_post_codes(sheets_service):
             if len(row) > code_col:
                 code = row[code_col].strip()
                 first_extracted = row[extracted_col].strip() if extracted_col and len(row) > extracted_col else ""
-                # Guarda apenas a primeira ocorrência (mais antiga) de cada code
                 if code and code not in saved:
                     saved[code] = first_extracted
         return saved
@@ -258,7 +255,6 @@ def save_posts_to_sheets(sheets_service, df):
     existing_rows = existing_data.get("values", [])
 
     if not existing_rows:
-        # Primeira execução: insere cabeçalho + dados
         values = [df.columns.tolist()] + df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
@@ -268,7 +264,6 @@ def save_posts_to_sheets(sheets_service, df):
         ).execute()
         print(f"  data_profile: {len(df)} linhas inseridas com cabeçalho.")
     else:
-        # Execuções seguintes: sempre adiciona todas as linhas (histórico)
         append_values = df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
@@ -281,7 +276,7 @@ def save_posts_to_sheets(sheets_service, df):
 
 
 # ==============================
-# ETAPA 3 — COMENTÁRIOS
+# ETAPA 3 — POST INFO (comentários + descrição)
 # ==============================
 
 def is_post_expired(first_extracted_at_str):
@@ -297,21 +292,22 @@ def is_post_expired(first_extracted_at_str):
         return False
 
 
-def scrape_instagram_comments(post_url, shortcode):
-    url = "https://api.sociavault.com/v1/scrape/instagram/comments"
+def fetch_post_info(shortcode):
+    """
+    Chama o endpoint /post-info e retorna:
+    - caption (str): texto de descrição do post
+    - comments (list): todos os comentários paginados
+    """
+    url = "https://api.sociavault.com/v1/scrape/instagram/post-info"
     headers = {"X-API-Key": SOCIA_API_KEY}
-    base_params = {
-        "url": post_url,
-        "shortcode": shortcode,
-        "limit": COMMENTS_LIMIT
-    }
 
     all_comments = []
+    caption = ""
     cursor = None
     page = 1
 
     while True:
-        params = base_params.copy()
+        params = {"shortcode": shortcode}
         if cursor:
             params["cursor"] = cursor
 
@@ -319,45 +315,72 @@ def scrape_instagram_comments(post_url, shortcode):
         response.raise_for_status()
         data = response.json()
 
-        items = (
-            data.get("data", {}).get("data", {}).get("comments")
-            or data.get("data", {}).get("comments")
-            or []
+        media = (
+            data.get("data", {})
+                .get("data", {})
+                .get("xdt_shortcode_media", {})
         )
 
-        page_comments = normalize_comments(items, page)
+        # Extrai caption apenas na primeira página
+        if page == 1:
+            caption_edges = (
+                media.get("edge_media_to_caption", {})
+                     .get("edges", {})
+            )
+            if isinstance(caption_edges, dict):
+                first = caption_edges.get("0", {})
+            elif isinstance(caption_edges, list) and len(caption_edges) > 0:
+                first = caption_edges[0]
+            else:
+                first = {}
+            caption = first.get("node", {}).get("text", "")
+
+        # Extrai comentários
+        comment_data = media.get("edge_media_to_parent_comment", {})
+        edges = comment_data.get("edges", {})
+
+        if isinstance(edges, dict):
+            comment_nodes = [v.get("node", {}) for v in edges.values()]
+        elif isinstance(edges, list):
+            comment_nodes = [item.get("node", {}) for item in edges]
+        else:
+            comment_nodes = []
+
+        page_comments = normalize_comments(comment_nodes, page)
         all_comments.extend(page_comments)
         print(f"    Página {page}: {len(page_comments)} comentários")
 
-        cursor = (
-            data.get("data", {}).get("data", {}).get("cursor")
-            or data.get("data", {}).get("cursor")
-        )
+        # Paginação
+        page_info = comment_data.get("page_info", {})
+        has_next = page_info.get("has_next_page", False)
 
-        if not cursor:
+        if not has_next:
+            break
+
+        # O end_cursor pode ser uma string JSON ou string simples
+        raw_cursor = page_info.get("end_cursor")
+        if raw_cursor:
+            try:
+                cursor_obj = json.loads(raw_cursor)
+                cursor = cursor_obj.get("server_cursor", raw_cursor)
+            except (json.JSONDecodeError, TypeError):
+                cursor = raw_cursor
+        else:
             break
 
         page += 1
         time.sleep(1)
 
-    return all_comments
+    return caption, all_comments
 
 
-def normalize_comments(items, page):
+def normalize_comments(comment_nodes, page):
     comments = []
-    if isinstance(items, dict):
-        iterable = items.values()
-    elif isinstance(items, list):
-        iterable = items
-    else:
-        iterable = []
-
-    for idx, item in enumerate(iterable, start=1):
-        item["_page"] = page
-        item["_comment_number"] = idx
-        item["_custom_comment_id"] = f"{page}_{idx}"
-        comments.append(item)
-
+    for idx, node in enumerate(comment_nodes, start=1):
+        node["_page"] = page
+        node["_comment_number"] = idx
+        node["_custom_comment_id"] = f"{page}_{idx}"
+        comments.append(node)
     return comments
 
 
@@ -413,21 +436,21 @@ def comments_to_dataframe(comments, post_url, perfil, saved_ids):
             skipped += 1
             continue
 
-        user = item.get("user", {})
+        user = item.get("owner", {})
         rows.append({
             "post_url": post_url,
             "perfil": perfil,
             "Id Comentário": item.get("_custom_comment_id"),
             "id": comment_id,
             "text": item.get("text"),
-            "comment_like_count": item.get("like_count"),
-            "child_comment_count": item.get("child_comment_count", 0),
+            "comment_like_count": item.get("edge_liked_by", {}).get("count"),
+            "child_comment_count": item.get("edge_threaded_comments", {}).get("count", 0),
             "created_at": item.get("created_at"),
             "user": json.dumps(user, ensure_ascii=False),
             "username": user.get("username"),
             "id_user": user.get("id"),
-            "is_unpublished": item.get("is_unpublished"),
-            "pk": user.get("pk"),
+            "is_unpublished": item.get("is_restricted_pending"),
+            "pk": user.get("id"),
             "is_verified": user.get("is_verified")
         })
 
@@ -619,7 +642,7 @@ def main():
         print("Nenhum perfil para processar. Encerrando.")
         return
 
-    # Carrega first_extracted_at de cada code (apenas para controle de expiração dos comentários)
+    # Carrega first_extracted_at de cada code
     saved_post_codes = get_saved_post_codes(sheets_service)
     print(f"Codes já conhecidos no data_profile: {len(saved_post_codes)}")
 
@@ -641,25 +664,21 @@ def main():
             print(f"  Nenhum post encontrado para @{handle}. Pulando.")
             continue
 
-        # Sempre salva todos os posts — snapshot histórico por run_datetime
-        save_posts_to_sheets(sheets_service, df_posts)
+        # ETAPA 3 — Para cada post: busca post-info (caption + comentários)
+        print(f"\n[ETAPA 3] Processando post-info dos posts de @{handle}...")
 
-        # Atualiza dict local apenas para codes novos (preserva o first_extracted_at original)
         hoje_str = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
-        for code in df_posts["code"].tolist():
-            if code not in saved_post_codes:
-                saved_post_codes[code] = hoje_str
 
-        # ETAPA 3 — Processar comentários de cada post
-        print(f"\n[ETAPA 3] Processando comentários dos posts de @{handle}...")
-
-        for _, post_row in df_posts.iterrows():
+        for idx, post_row in df_posts.iterrows():
             post_url = post_row.get("url", "")
             post_code = post_row.get("code", "")
 
-            if not post_url:
-                print(f"  Post sem URL (code={post_code}), pulando.")
+            if not post_code:
+                print(f"  Post sem code (url={post_url}), pulando.")
                 continue
+
+            if not post_url:
+                post_url = f"https://www.instagram.com/p/{post_code}/"
 
             # Verifica expiração (14 dias desde first_extracted_at)
             first_extracted_at = saved_post_codes.get(post_code, "")
@@ -670,22 +689,38 @@ def main():
             print(f"\n  Post: {post_url}")
 
             try:
+                # Busca caption e comentários via post-info
+                caption, all_comments = fetch_post_info(post_code)
+
+                # Atualiza caption no dataframe de posts
+                df_posts.at[idx, "post_caption"] = caption
+                if caption:
+                    print(f"    Caption extraída: {caption[:80]}{'...' if len(caption) > 80 else ''}")
+                else:
+                    print(f"    Caption: (vazia)")
+
+                # Processa comentários
                 saved_ids = get_saved_comment_ids(sheets_service, post_url)
-                all_comments = scrape_instagram_comments(post_url, post_url)
                 df_comments = comments_to_dataframe(all_comments, post_url, handle, saved_ids)
 
                 if df_comments.empty:
                     print("    Nenhum comentário novo. Pulando classificação.")
-                    continue
-
-                df_comments = classificar_dataframe(df_comments)
-                df_comments["data_execucao"] = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
-
-                save_comments_to_sheets(sheets_service, df_comments)
+                else:
+                    df_comments = classificar_dataframe(df_comments)
+                    df_comments["data_execucao"] = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+                    save_comments_to_sheets(sheets_service, df_comments)
 
             except Exception as e:
-                print(f"    ERRO ao processar comentários de {post_url}: {e}. Pulando post.")
+                print(f"    ERRO ao processar post-info de {post_url}: {e}. Pulando post.")
                 continue
+
+        # Salva posts (com captions preenchidas) no data_profile
+        save_posts_to_sheets(sheets_service, df_posts)
+
+        # Atualiza dict local para controle de expiração
+        for code in df_posts["code"].tolist():
+            if code and code not in saved_post_codes:
+                saved_post_codes[code] = hoje_str
 
     print(f"\n{'=' * 60}")
     print("PIPELINE FINALIZADO COM SUCESSO")
