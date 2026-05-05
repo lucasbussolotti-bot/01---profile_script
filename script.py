@@ -307,7 +307,8 @@ def fetch_post_info(shortcode):
     page = 1
 
     while True:
-        params = {"shortcode": shortcode}
+        post_url_param = f"https://www.instagram.com/p/{shortcode}/"
+        params = {"url": post_url_param}
         if cursor:
             params["cursor"] = cursor
 
