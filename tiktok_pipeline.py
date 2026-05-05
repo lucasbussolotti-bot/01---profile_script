@@ -204,7 +204,6 @@ def processar_perfil(service, username):
     df_row = pd.DataFrame([row])[PROFILE_COLS]
     append_to_sheet(service, SHEET_TT_DATA_PROFILE_ID, TAB_TT_DATA_PROFILE, df_row)
 
-    # Extrai o handle real retornado pela API (ex: "jmenaoficial" em vez de "Jmena")
     real_handle = user.get("uniqueId", username)
     print(f"    Perfil {username} salvo no tt_data_profile. Handle real: {real_handle}", flush=True)
 
@@ -340,29 +339,54 @@ def processar_comentarios(service, client, post):
 
     ensure_header(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, COMMENT_COLS)
 
-    # Buscar comentários
-    try:
-        data = sv_get("comments", {"url": video_url})
-    except Exception as e:
-        print(f"      Erro ao buscar comentários do vídeo {video_id}: {e}", flush=True)
-        return
+    # Paginação até atingir COMMENTS_LIMIT ou não ter mais páginas
+    novos = []
+    cursor = None
+    pagina = 1
 
-    inner = data.get("data", data)
-    raw = inner.get("comments", data.get("comments", []))
-    if isinstance(raw, dict):
-        comments = list(raw.values())
-    elif isinstance(raw, list):
-        comments = raw
-    else:
-        comments = []
+    while len(novos) < COMMENTS_LIMIT:
+        params = {"url": video_url}
+        if cursor is not None:
+            params["cursor"] = cursor
 
-    # Filtra apenas comentários novos
-    novos = [c for c in comments if str(c.get("cid", c.get("comment_id", c.get("id", "")))) not in existing_ids]
+        try:
+            data = sv_get("comments", params)
+        except Exception as e:
+            print(f"      Erro ao buscar comentários (página {pagina}) do vídeo {video_id}: {e}", flush=True)
+            break
+
+        inner = data.get("data", data)
+        raw = inner.get("comments", {})
+        if isinstance(raw, dict):
+            comments = list(raw.values())
+        elif isinstance(raw, list):
+            comments = raw
+        else:
+            comments = []
+
+        print(f"      Página {pagina}: {len(comments)} comentários recebidos.", flush=True)
+
+        # Filtra apenas novos
+        novos_pagina = [
+            c for c in comments
+            if str(c.get("cid", c.get("comment_id", c.get("id", "")))) not in existing_ids
+        ]
+        novos.extend(novos_pagina)
+
+        has_more = inner.get("has_more", 0)
+        cursor   = inner.get("cursor", None)
+        pagina  += 1
+
+        if not has_more or cursor is None:
+            break
+
+        time.sleep(1)  # respeita rate limit entre páginas
+
     if not novos:
         print(f"      Sem comentários novos para vídeo {video_id}.", flush=True)
         return
 
-    # Limita aos primeiros COMMENTS_LIMIT comentários novos
+    # Limita ao COMMENTS_LIMIT
     if len(novos) > COMMENTS_LIMIT:
         print(f"      Limitando de {len(novos)} para {COMMENTS_LIMIT} comentários.", flush=True)
         novos = novos[:COMMENTS_LIMIT]
