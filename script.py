@@ -127,7 +127,7 @@ def fetch_posts(handle):
     iterable = iterable[:POSTS_LIMIT]
 
     for item in iterable:
-        username = item.get("user", {}).get("username", top_username)
+        username_shared = item.get("user", {}).get("username", top_username)
         code = item.get("code")
         taken_at = item.get("taken_at")
         post_url = item.get("url")
@@ -157,7 +157,9 @@ def fetch_posts(handle):
 
         rows.append({
             "run_datetime": run_datetime,
-            "username": username,
+            "Plataform": "Instagram",
+            "username": handle,
+            "username_shared": username_shared,
             "code": code,
             "taken_at": taken_at,
             "url": post_url,
