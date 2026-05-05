@@ -6,7 +6,6 @@ import requests
 import pandas as pd
 from datetime import datetime, timezone
 from google import genai
-from google.genai import types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -17,14 +16,14 @@ SOCIAVAULT_API_KEY = os.environ.get("SOCIAVAULT_API_KEY", "")
 GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS", "")
 
-SHEET_TIKTOK_PROFILE_ID  = "1947Wx86ZtNWQSaqcYVSXv_3WLvIA0p6u_Ol1DZ8GmX8"
-SHEET_TT_DATA_PROFILE_ID = "1roDSHeO9-O_DKfTwUKAQv3euCUyfipKq_KxkpKpf3r4"
-SHEET_TT_DATA_POST_ID    = "1o96u5EXkqhtxGdEqaUGYX4Us2HGnHfkVBLJIobqcma8"
+SHEET_TIKTOK_PROFILE_ID   = "1947Wx86ZtNWQSaqcYVSXv_3WLvIA0p6u_Ol1DZ8GmX8"
+SHEET_TT_DATA_PROFILE_ID  = "1roDSHeO9-O_DKfTwUKAQv3euCUyfipKq_KxkpKpf3r4"
+SHEET_TT_DATA_POST_ID     = "1o96u5EXkqhtxGdEqaUGYX4Us2HGnHfkVBLJIobqcma8"
 SHEET_TT_DATA_COMMENTS_ID = "1shH8-PpUBTEuS7Izy4uTgmEcOHF-tdk_DbJR1ifXqJA"
 
-TAB_TIKTOK_PROFILE  = "tiktok_profile"
-TAB_TT_DATA_PROFILE = "tt_data_profile"
-TAB_TT_DATA_POST    = "tt_data_post"
+TAB_TIKTOK_PROFILE   = "tiktok_profile"
+TAB_TT_DATA_PROFILE  = "tt_data_profile"
+TAB_TT_DATA_POST     = "tt_data_post"
 TAB_TT_DATA_COMMENTS = "tt_data_comments"
 
 API_BASE         = "https://api.sociavault.com/v1/scrape/tiktok"
@@ -32,6 +31,7 @@ MAX_POSTS        = 12
 POST_MAX_DAYS    = 14
 GEMINI_BATCH     = 20
 GEMINI_MAX_RETRY = 2
+COMMENTS_LIMIT   = 100  # máximo de comentários novos por vídeo
 
 # ==============================
 # GOOGLE SHEETS HELPERS
@@ -318,10 +318,11 @@ COMMENT_COLS = [
 ]
 
 def processar_comentarios(service, client, post):
-    video_id  = str(post.get("video_id", ""))
-    video_url = post.get("video_url", "")
+    video_id        = str(post.get("video_id", ""))
+    video_url       = post.get("video_url", "")
     first_extracted = post.get("first_extracted_at", "")
 
+    # Checar 14 dias
     try:
         extracted_dt = datetime.strptime(first_extracted, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         dias = (datetime.now(timezone.utc) - extracted_dt).days
@@ -333,11 +334,13 @@ def processar_comentarios(service, client, post):
 
     print(f"    [2.2] Buscando comentários do vídeo: {video_url}", flush=True)
 
+    # Lê IDs já salvos
     existing_df = read_sheet(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS)
     existing_ids = set(existing_df["comment_id"].astype(str).tolist()) if not existing_df.empty and "comment_id" in existing_df.columns else set()
 
     ensure_header(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, COMMENT_COLS)
 
+    # Buscar comentários
     try:
         data = sv_get("comments", {"url": video_url})
     except Exception as e:
@@ -353,13 +356,20 @@ def processar_comentarios(service, client, post):
     else:
         comments = []
 
+    # Filtra apenas comentários novos
     novos = [c for c in comments if str(c.get("cid", c.get("comment_id", c.get("id", "")))) not in existing_ids]
     if not novos:
         print(f"      Sem comentários novos para vídeo {video_id}.", flush=True)
         return
 
+    # Limita aos primeiros COMMENTS_LIMIT comentários novos
+    if len(novos) > COMMENTS_LIMIT:
+        print(f"      Limitando de {len(novos)} para {COMMENTS_LIMIT} comentários.", flush=True)
+        novos = novos[:COMMENTS_LIMIT]
+
     print(f"      {len(novos)} comentário(s) novo(s) para classificar.", flush=True)
 
+    # Classificar em lotes
     all_rows = []
     for i in range(0, len(novos), GEMINI_BATCH):
         lote = novos[i:i + GEMINI_BATCH]
