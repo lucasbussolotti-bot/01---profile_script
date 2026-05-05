@@ -94,12 +94,33 @@ def read_profiles(sheets_service):
 
     print(f"{len(profiles)} perfil(is) encontrado(s): {[p['profile'] for p in profiles]}")
     return profiles
+# ==============================
+# NOVA FUNÇÃO (ADICIONADA)
+# ==============================
+def fetch_profile(handle):
+    api_key = SOCIA_API_KEY
+    headers = {"X-API-Key": api_key}
+
+    url = "https://api.sociavault.com/v1/scrape/instagram/profile"
+    params = {"handle": handle}
+
+    response = requests.get(url, params=params, headers=headers, timeout=API_TIMEOUT)
+    print(f"  Status profile ({handle}): {response.status_code}")
+    response.raise_for_status()
+
+    json_data = response.json()
+    user = json_data.get("data", {}).get("user", {})
+
+    return {
+        "followers_count": user.get("edge_followed_by", {}).get("count", ""),
+        "following_count": user.get("edge_follow", {}).get("count", ""),
+        "total_posts_count": user.get("edge_owner_to_timeline_media", {}).get("count", "")
+    }
 
 
 # ==============================
-# ETAPA 2 — EXTRAIR POSTS
+# ETAPA 2 — EXTRAIR POSTS (AJUSTADA)
 # ==============================
-
 def fetch_posts(handle):
     api_key = SOCIA_API_KEY
     headers = {"X-API-Key": api_key}
@@ -113,13 +134,13 @@ def fetch_posts(handle):
 
     items = json_data.get("data", {}).get("items", {})
 
-    # ── Captura dados do perfil ────────────────────────────────
-    user_info = json_data.get("data", {}).get("user", {})
-    top_username        = user_info.get("username")
-    followers_count     = user_info.get("edge_followed_by", {}).get("count", "")
-    following_count     = user_info.get("edge_follow", {}).get("count", "")
-    total_posts_count   = user_info.get("edge_owner_to_timeline_media", {}).get("count", "")
-    # ──────────────────────────────────────────────────────────
+    # 🔥 NOVO: pega dados do profile (endpoint correto)
+    profile_data = fetch_profile(handle)
+
+    top_username = handle
+    followers_count   = profile_data["followers_count"]
+    following_count   = profile_data["following_count"]
+    total_posts_count = profile_data["total_posts_count"]
 
     run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -186,71 +207,6 @@ def fetch_posts(handle):
     df = df.fillna("")
     print(f"  Posts extraídos: {len(df)}")
     return df
-
-
-def get_saved_post_codes(sheets_service):
-    """Retorna dict {code: first_extracted_at} já salvos no data_profile.
-    Usado apenas para controlar a expiração de 14 dias dos comentários.
-    """
-    try:
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
-            range=f"{SHEET_DATA_PROFILE}!A:Z"
-        ).execute()
-        rows = result.get("values", [])
-        if len(rows) <= 1:
-            return {}
-        headers = rows[0]
-        if "code" not in headers:
-            return {}
-        code_col = headers.index("code")
-        extracted_col = headers.index("first_extracted_at") if "first_extracted_at" in headers else None
-        saved = {}
-        for row in rows[1:]:
-            if len(row) > code_col:
-                code = row[code_col].strip()
-                first_extracted = row[extracted_col].strip() if extracted_col and len(row) > extracted_col else ""
-                # Guarda apenas a primeira ocorrência (mais antiga) de cada code
-                if code and code not in saved:
-                    saved[code] = first_extracted
-        return saved
-    except Exception as e:
-        print(f"  Aviso ao ler data_profile: {e}")
-        return {}
-
-
-def save_posts_to_sheets(sheets_service, df):
-    """Salva todos os posts sempre, criando snapshot histórico por run_datetime."""
-    df = df.fillna("")
-
-    existing_data = sheets_service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
-        range=f"{SHEET_DATA_PROFILE}!A:A"
-    ).execute()
-    existing_rows = existing_data.get("values", [])
-
-    if not existing_rows:
-        # Primeira execução: insere cabeçalho + dados
-        values = [df.columns.tolist()] + df.astype(str).values.tolist()
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
-            range=f"{SHEET_DATA_PROFILE}!A1",
-            valueInputOption="RAW",
-            body={"values": values}
-        ).execute()
-        print(f"  data_profile: {len(df)} linhas inseridas com cabeçalho.")
-    else:
-        # Execuções seguintes: sempre adiciona todas as linhas (histórico)
-        append_values = df.astype(str).values.tolist()
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
-            range=f"{SHEET_DATA_PROFILE}!A:A",
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": append_values}
-        ).execute()
-        print(f"  data_profile: {len(append_values)} linhas adicionadas (snapshot {df['run_datetime'].iloc[0]}).")
-
 
 # ==============================
 # ETAPA 3 — COMENTÁRIOS
