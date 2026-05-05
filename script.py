@@ -201,7 +201,7 @@ def fetch_posts(handle):
             "code": code,
             "taken_at": taken_at,
             "url": post_url,
-            "media_type": media_type_label,
+            "media_type": media_type,
             "comment_count": comment_count,
             "like_count": like_count,
             "play_count": play_count,
@@ -314,6 +314,12 @@ def fetch_post_info(shortcode):
             params["cursor"] = cursor
 
         response = requests.get(url, params=params, headers=headers, timeout=API_TIMEOUT)
+
+        # 404 durante paginação = cursor expirado, trata como fim dos comentários
+        if response.status_code == 404 and page > 1:
+            print(f"    Página {page}: cursor expirado (404), encerrando paginação.")
+            break
+
         response.raise_for_status()
         data = response.json()
 
@@ -703,7 +709,9 @@ def main():
 
                 # Processa comentários
                 saved_ids = get_saved_comment_ids(sheets_service, post_url)
-                df_comments = comments_to_dataframe(all_comments, post_url, handle, saved_ids)
+                # Limita a classificação aos últimos 100 comentários novos
+                comments_to_classify = all_comments[-COMMENTS_LIMIT:] if len(all_comments) > COMMENTS_LIMIT else all_comments
+                df_comments = comments_to_dataframe(comments_to_classify, post_url, handle, saved_ids)
 
                 if df_comments.empty:
                     print("    Nenhum comentário novo. Pulando classificação.")
@@ -715,6 +723,9 @@ def main():
             except Exception as e:
                 print(f"    ERRO ao processar post-info de {post_url}: {e}. Pulando post.")
                 continue
+
+        # Reconecta Google Services antes de salvar (evita SSLEOFError por inatividade)
+        _, sheets_service = get_google_services()
 
         # Salva posts (com captions preenchidas) no data_profile
         save_posts_to_sheets(sheets_service, df_posts)
