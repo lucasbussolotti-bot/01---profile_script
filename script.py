@@ -201,7 +201,7 @@ def fetch_posts(handle):
             "code": code,
             "taken_at": taken_at,
             "url": post_url,
-            "media_type": media_type,
+            "media_type": media_type_label,
             "comment_count": comment_count,
             "like_count": like_count,
             "play_count": play_count,
