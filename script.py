@@ -97,7 +97,7 @@ def read_profiles(sheets_service):
 
 
 # ==============================
-# ETAPA 2 — EXTRAIR POSTS (Script 1 adaptado)
+# ETAPA 2 — EXTRAIR POSTS
 # ==============================
 
 def fetch_posts(handle):
@@ -124,7 +124,6 @@ def fetch_posts(handle):
     else:
         iterable = []
 
-    # Garante apenas os primeiros 12
     iterable = iterable[:POSTS_LIMIT]
 
     for item in iterable:
@@ -168,7 +167,7 @@ def fetch_posts(handle):
             "play_count": play_count,
             "preview_image_url": preview_image_url,
             "first_frame_url": first_frame_url,
-            "first_extracted_at": run_datetime  # nova coluna
+            "first_extracted_at": run_datetime
         })
 
     df = pd.DataFrame(rows)
@@ -178,7 +177,9 @@ def fetch_posts(handle):
 
 
 def get_saved_post_codes(sheets_service):
-    """Retorna dict {code: first_extracted_at} já salvos no data_profile."""
+    """Retorna dict {code: first_extracted_at} já salvos no data_profile.
+    Usado apenas para controlar a expiração de 14 dias dos comentários.
+    """
     try:
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
@@ -197,7 +198,8 @@ def get_saved_post_codes(sheets_service):
             if len(row) > code_col:
                 code = row[code_col].strip()
                 first_extracted = row[extracted_col].strip() if extracted_col and len(row) > extracted_col else ""
-                if code:
+                # Guarda apenas a primeira ocorrência (mais antiga) de cada code
+                if code and code not in saved:
                     saved[code] = first_extracted
         return saved
     except Exception as e:
@@ -206,6 +208,7 @@ def get_saved_post_codes(sheets_service):
 
 
 def save_posts_to_sheets(sheets_service, df):
+    """Salva todos os posts sempre, criando snapshot histórico por run_datetime."""
     df = df.fillna("")
 
     existing_data = sheets_service.spreadsheets().values().get(
@@ -215,6 +218,7 @@ def save_posts_to_sheets(sheets_service, df):
     existing_rows = existing_data.get("values", [])
 
     if not existing_rows:
+        # Primeira execução: insere cabeçalho + dados
         values = [df.columns.tolist()] + df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
@@ -224,6 +228,7 @@ def save_posts_to_sheets(sheets_service, df):
         ).execute()
         print(f"  data_profile: {len(df)} linhas inseridas com cabeçalho.")
     else:
+        # Execuções seguintes: sempre adiciona todas as linhas (histórico)
         append_values = df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
@@ -232,11 +237,11 @@ def save_posts_to_sheets(sheets_service, df):
             insertDataOption="INSERT_ROWS",
             body={"values": append_values}
         ).execute()
-        print(f"  data_profile: {len(append_values)} linhas adicionadas.")
+        print(f"  data_profile: {len(append_values)} linhas adicionadas (snapshot {df['run_datetime'].iloc[0]}).")
 
 
 # ==============================
-# ETAPA 3 — COMENTÁRIOS (Script 2 adaptado)
+# ETAPA 3 — COMENTÁRIOS
 # ==============================
 
 def is_post_expired(first_extracted_at_str):
@@ -406,11 +411,10 @@ def comments_to_dataframe(comments, post_url, perfil, saved_ids):
 # ==============================
 
 def extrair_retry_seconds(error_message):
-    """Extrai o tempo de espera sugerido pelo erro do Gemini."""
     match = re.search(r"retry in ([0-9.]+)s", str(error_message))
     if match:
-        return float(match.group(1)) + 2  # adiciona 2s de margem
-    return 60  # fallback: espera 60s se não encontrar
+        return float(match.group(1)) + 2
+    return 60
 
 
 def classificar_lote_comentarios(comentarios, tentativa=1, max_tentativas=2):
@@ -549,7 +553,6 @@ def main():
     print("INICIANDO PIPELINE INSTAGRAM")
     print("=" * 60)
 
-    # Checagem de variáveis de ambiente
     print("\n[CONFIG] Verificando variáveis de ambiente...")
     missing = []
     for var in ["SOCIAVAULT_API_KEY", "GEMINI_API_KEY", "GDRIVE_CREDENTIALS"]:
@@ -576,9 +579,9 @@ def main():
         print("Nenhum perfil para processar. Encerrando.")
         return
 
-    # Carrega códigos já salvos no data_profile (para deduplicação)
+    # Carrega first_extracted_at de cada code (apenas para controle de expiração dos comentários)
     saved_post_codes = get_saved_post_codes(sheets_service)
-    print(f"Posts já salvos no data_profile: {len(saved_post_codes)}")
+    print(f"Codes já conhecidos no data_profile: {len(saved_post_codes)}")
 
     for profile_entry in profiles:
         handle = profile_entry["profile"]
@@ -598,17 +601,13 @@ def main():
             print(f"  Nenhum post encontrado para @{handle}. Pulando.")
             continue
 
-        # Filtra posts já salvos (deduplicação por code)
-        new_posts = df_posts[~df_posts["code"].isin(saved_post_codes.keys())]
-        already_saved = df_posts[df_posts["code"].isin(saved_post_codes.keys())]
+        # Sempre salva todos os posts — snapshot histórico por run_datetime
+        save_posts_to_sheets(sheets_service, df_posts)
 
-        print(f"  Posts novos: {len(new_posts)} | Já salvos (ignorados): {len(already_saved)}")
-
-        if not new_posts.empty:
-            save_posts_to_sheets(sheets_service, new_posts)
-            # Atualiza o dict local com os novos posts
-            hoje_str = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
-            for code in new_posts["code"].tolist():
+        # Atualiza dict local apenas para codes novos (preserva o first_extracted_at original)
+        hoje_str = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+        for code in df_posts["code"].tolist():
+            if code not in saved_post_codes:
                 saved_post_codes[code] = hoje_str
 
         # ETAPA 3 — Processar comentários de cada post
@@ -631,24 +630,17 @@ def main():
             print(f"\n  Post: {post_url}")
 
             try:
-                # Busca IDs já salvos para esse post
                 saved_ids = get_saved_comment_ids(sheets_service, post_url)
-
-                # Scraping de comentários
                 all_comments = scrape_instagram_comments(post_url, post_url)
-
-                # Filtra novos e transforma
                 df_comments = comments_to_dataframe(all_comments, post_url, handle, saved_ids)
 
                 if df_comments.empty:
                     print("    Nenhum comentário novo. Pulando classificação.")
                     continue
 
-                # Classifica com Gemini
                 df_comments = classificar_dataframe(df_comments)
                 df_comments["data_execucao"] = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
 
-                # Salva no data_comments
                 save_comments_to_sheets(sheets_service, df_comments)
 
             except Exception as e:
