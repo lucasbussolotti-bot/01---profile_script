@@ -112,7 +112,14 @@ def fetch_posts(handle):
     json_data = response.json()
 
     items = json_data.get("data", {}).get("items", {})
-    top_username = json_data.get("data", {}).get("user", {}).get("username")
+
+    # ── Captura dados do perfil ────────────────────────────────
+    user_info = json_data.get("data", {}).get("user", {})
+    top_username        = user_info.get("username")
+    followers_count     = user_info.get("edge_followed_by", {}).get("count", "")
+    following_count     = user_info.get("edge_follow", {}).get("count", "")
+    total_posts_count   = user_info.get("edge_owner_to_timeline_media", {}).get("count", "")
+    # ──────────────────────────────────────────────────────────
 
     run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -160,6 +167,9 @@ def fetch_posts(handle):
             "Plataform": "Instagram",
             "username": handle,
             "username_shared": username_shared,
+            "followers_count": followers_count,
+            "following_count": following_count,
+            "total_posts_count": total_posts_count,
             "code": code,
             "taken_at": taken_at,
             "url": post_url,
