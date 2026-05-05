@@ -358,6 +358,12 @@ def fetch_post_info(shortcode):
         all_comments.extend(page_comments)
         print(f"    Página {page}: {len(page_comments)} comentários")
 
+        # Para de paginar se já atingiu o limite de comentários
+        if len(all_comments) >= COMMENTS_LIMIT:
+            print(f"    Limite de {COMMENTS_LIMIT} comentários atingido, encerrando paginação.")
+            all_comments = all_comments[:COMMENTS_LIMIT]
+            break
+
         # Paginação
         page_info = comment_data.get("page_info", {})
         has_next = page_info.get("has_next_page", False)
