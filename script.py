@@ -154,6 +154,12 @@ def fetch_posts(handle):
 
     iterable = iterable[:POSTS_LIMIT]
 
+    media_type_map = {
+    1: "Image",
+    2: "Video",
+    8: "Carousel"
+    }
+
     for item in iterable:
         username_shared = item.get("user", {}).get("username", top_username)
         code = item.get("code")
@@ -164,6 +170,7 @@ def fetch_posts(handle):
             post_url = f"https://www.instagram.com/p/{code}/"
 
         media_type = item.get("media_type")
+        media_type_label = media_type_map.get(media_type, "Other")
         comment_count = item.get("comment_count")
         like_count = item.get("like_count")
         play_count = item.get("play_count")
