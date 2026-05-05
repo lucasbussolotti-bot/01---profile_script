@@ -29,7 +29,7 @@ API_TIMEOUT = 60  # segundos
 SOCIA_API_KEY = os.environ.get("SOCIAVAULT_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-POSTS_LIMIT = 12
+POSTS_LIMIT = 5
 COMMENTS_LIMIT = 100
 BATCH_SIZE = 20
 POST_EXPIRY_DAYS = 14
@@ -162,7 +162,8 @@ def fetch_posts(handle):
     for item in iterable:
         username_shared = item.get("user", {}).get("username", top_username)
         code = item.get("code")
-        taken_at = item.get("taken_at")
+        taken_at_raw = item.get("taken_at")
+        taken_at = datetime.fromtimestamp(taken_at_raw, tz=tz_br).strftime("%Y-%m-%d %H:%M:%S") if taken_at_raw else ""
         post_url = item.get("url")
 
         if not post_url and code:
