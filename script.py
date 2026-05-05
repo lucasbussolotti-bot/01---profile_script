@@ -107,9 +107,11 @@ def fetch_profile(handle):
     data = response.json()
 
     user = (
-        data.get("data", {}).get("user")
-        or data.get("user")
-        or {}
+    data.get("data", {})
+        .get("data", {})   # 👈 ESSE É O AJUSTE
+        .get("user")
+    or data.get("user")
+    or {}
     )
 
     return {
