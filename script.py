@@ -138,7 +138,7 @@ def fetch_posts(handle):
 
     items = json_data.get("data", {}).get("items", {})
     profile_data = fetch_profile(handle)
-top_username = profile_data.get("username")
+    top_username = profile_data.get("username")
 
     run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
 
