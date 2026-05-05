@@ -149,6 +149,7 @@ def fetch_posts(handle):
     elif isinstance(items, list):
         iterable = items
     else:
+        print(f"  Aviso: estrutura inesperada de 'items': {type(items)} — keys disponíveis: {list(json_data.get('data', {}).keys())}")
         iterable = []
 
     iterable = iterable[:POSTS_LIMIT]
