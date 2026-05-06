@@ -17,10 +17,10 @@ GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS", "")
 
 SHEET_INPUT_ID        = "1947Wx86ZtNWQSaqcYVSXv_3WLvIA0p6u_Ol1DZ8GmX8"
-SHEET_TT_DATA_COMMENTS_ID = "1shH8-PpUBTEuS7Izy4uTgmEcOHF-tdk_DbJR1ifXqJA"
+SHEET_TT_DATA_COMMENTS_ID = "1BD4OoVfXZHI6p5kJ6KmLAMsPfpQ86MjdNdVoPPWhgkg"
 
 TAB_INPUT            = "tiktok_profile"
-TAB_TT_DATA_COMMENTS = "tt_data_comments"
+TAB_TT_DATA_COMMENTS = "tt_data_comments_post"
 
 API_BASE         = "https://api.sociavault.com/v1/scrape/tiktok"
 POST_MAX_DAYS    = 14
