@@ -217,6 +217,7 @@ def fetch_post_info(shortcode):
     caption = ""
     cursor = None
     page = 1
+    seen_ids = set()  # controle de IDs já vistos para detectar páginas duplicadas
 
     while True:
         post_url_param = f"https://www.instagram.com/p/{shortcode}/"
@@ -264,6 +265,13 @@ def fetch_post_info(shortcode):
             comment_nodes = [item.get("node", {}) for item in edges]
         else:
             comment_nodes = []
+
+        # Detecta página duplicada: se todos os IDs já foram vistos, para imediatamente
+        page_ids = {str(node.get("id", "")) for node in comment_nodes if node.get("id")}
+        if page_ids and page_ids.issubset(seen_ids):
+            print(f"    Página {page}: todos os IDs já vistos (API retornou página duplicada), encerrando paginação.")
+            break
+        seen_ids.update(page_ids)
 
         page_comments = normalize_comments(comment_nodes, page)
         all_comments.extend(page_comments)
