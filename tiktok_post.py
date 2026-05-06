@@ -16,11 +16,13 @@ SOCIAVAULT_API_KEY = os.environ.get("SOCIAVAULT_API_KEY", "")
 GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS", "")
 
-SHEET_INPUT_ID        = "1947Wx86ZtNWQSaqcYVSXv_3WLvIA0p6u_Ol1DZ8GmX8"
+SHEET_INPUT_ID            = "1947Wx86ZtNWQSaqcYVSXv_3WLvIA0p6u_Ol1DZ8GmX8"
 SHEET_TT_DATA_COMMENTS_ID = "1BD4OoVfXZHI6p5kJ6KmLAMsPfpQ86MjdNdVoPPWhgkg"
+SHEET_TT_DATA_POST_ID     = "1CtvNfYM5Jp_kuriycsYMAMzCQYW0pFxqvGmOD0O4n80"
 
 TAB_INPUT            = "tiktok_profile"
 TAB_TT_DATA_COMMENTS = "tt_data_comments_post"
+TAB_TT_DATA_POST     = "tt_data_post_post"
 
 API_BASE         = "https://api.sociavault.com/v1/scrape/tiktok"
 POST_MAX_DAYS    = 14
@@ -229,6 +231,53 @@ def ler_posts(service):
     return posts_validos
 
 # ==============================
+# ETAPA 2.1 — VIDEO INFO / STATISTICS
+# ==============================
+
+POST_COLS = [
+    "video_url", "run_datetime",
+    "aweme_id", "digg_count", "comment_count", "share_count",
+    "play_count", "collect_count", "download_count", "whatsapp_share_count",
+    "forward_count", "repost_count"
+]
+
+def processar_video_info(service, post):
+    video_url = post["video_url"]
+    video_id  = post["video_id"]
+    print(f"  [2.1] Buscando video-info: {video_url}", flush=True)
+
+    try:
+        data = sv_get("video-info", {"url": video_url})
+    except Exception as e:
+        print(f"    Erro ao buscar video-info de {video_id}: {e}", flush=True)
+        return
+
+    ensure_header(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST, POST_COLS)
+
+    aweme = data.get("data", {}).get("aweme_detail", {})
+    stats = aweme.get("statistics", {})
+
+    row = {
+        "video_url":            video_url,
+        "run_datetime":         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "aweme_id":             stats.get("aweme_id", video_id),
+        "digg_count":           stats.get("digg_count", ""),
+        "comment_count":        stats.get("comment_count", ""),
+        "share_count":          stats.get("share_count", ""),
+        "play_count":           stats.get("play_count", ""),
+        "collect_count":        stats.get("collect_count", ""),
+        "download_count":       stats.get("download_count", ""),
+        "whatsapp_share_count": stats.get("whatsapp_share_count", ""),
+        "forward_count":        stats.get("forward_count", ""),
+        "repost_count":         stats.get("repost_count", ""),
+    }
+
+    df_row = pd.DataFrame([row])[POST_COLS]
+    append_to_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST, df_row)
+    print(f"    video-info salvo para {video_id}.", flush=True)
+
+
+# ==============================
 # ETAPA 2.2 — COMENTÁRIOS
 # ==============================
 
@@ -381,6 +430,13 @@ def main():
         print(f"POST: {post['video_url']} | @{post['username']} | {post['dias']} dia(s) desde publicação", flush=True)
         print(f"{'='*40}", flush=True)
 
+        # ETAPA 2.1 — Video info + statistics
+        try:
+            processar_video_info(service, post)
+        except Exception as e:
+            print(f"  Erro em 2.1 para vídeo {post['video_id']}: {e}. Continuando para comentários.", flush=True)
+
+        # ETAPA 2.2 — Comentários
         try:
             salvos = processar_comentarios(service, client, post, existing_ids)
             total_salvos += salvos
