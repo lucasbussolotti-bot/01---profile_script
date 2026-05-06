@@ -154,12 +154,27 @@ def classify_comments_batch(client, comments_text):
 def ler_perfis(service):
     print("[ETAPA 1] Lendo perfis do tiktok_profile...", flush=True)
     df = read_sheet(service, SHEET_TIKTOK_PROFILE_ID, TAB_TIKTOK_PROFILE)
-    if df.empty or "profile" not in df.columns:
+    
+    if df.empty:
         print("  Nenhum perfil encontrado.", flush=True)
         return []
-    col_date = "date added" if "date added" in df.columns else "date_added" if "date_added" in df.columns else None
-    cols = ["profile"] + ([col_date] if col_date else [])
-    perfis = df[cols].dropna(subset=["profile"]).to_dict("records")
+
+    # Normaliza os cabeçalhos para minúsculo
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    if "username" not in df.columns:
+        print(f"  Coluna 'Username' não encontrada. Colunas disponíveis: {list(df.columns)}", flush=True)
+        return []
+
+    perfis = (
+        df[["username"]]
+        .rename(columns={"username": "profile"})
+        .dropna(subset=["profile"])
+        .assign(date_added="")
+        .to_dict("records")
+    )
+    perfis = [p for p in perfis if p["profile"].strip()]
+
     print(f"  {len(perfis)} perfil(is) encontrado(s).", flush=True)
     return perfis
 
