@@ -72,7 +72,7 @@ def get_google_services():
 def read_profiles(sheets_service):
     result = sheets_service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_PROFILES_ID,
-        range=f"{SHEET_PROFILES}!A:B"
+        range=f"{SHEET_PROFILES}!A:F"
     ).execute()
 
     rows = result.get("values", [])
@@ -81,16 +81,19 @@ def read_profiles(sheets_service):
         return []
 
     headers = [h.strip().lower() for h in rows[0]]
+
+    if "username" not in headers:
+        print(f"Coluna 'Username' não encontrada. Colunas disponíveis: {headers}")
+        return []
+
+    username_col = headers.index("username")
     profiles = []
 
     for row in rows[1:]:
-        while len(row) < len(headers):
-            row.append("")
-        entry = dict(zip(headers, row))
-        profile = entry.get("profile", "").strip()
-        date_added = entry.get("date added", "").strip()
-        if profile:
-            profiles.append({"profile": profile, "date_added": date_added})
+        if len(row) > username_col:
+            username = row[username_col].strip()
+            if username:
+                profiles.append({"profile": username, "date_added": ""})
 
     print(f"{len(profiles)} perfil(is) encontrado(s): {[p['profile'] for p in profiles]}")
     return profiles
