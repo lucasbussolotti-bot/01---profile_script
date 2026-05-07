@@ -285,7 +285,7 @@ COMMENT_COLS = [
     "comment_id", "video_id", "text", "create_time",
     "likes", "replies_count", "purchase_intent",
     "user_name", "username", "language",
-    "classification", "classification_reason"
+    "classification", "classification_reason", "video_url"
 ]
 
 def processar_comentarios(service, client, post, existing_ids):
@@ -372,7 +372,8 @@ def processar_comentarios(service, client, post, existing_ids):
                 "username":              c_user.get("unique_id", c.get("username", username)),
                 "language":              c.get("comment_language", c.get("language", "")),
                 "classification":        clf.get("classification", ""),
-                "classification_reason": clf.get("classification_reason", "")
+                "classification_reason": clf.get("classification_reason", ""),
+                "video_url":             video_url
             }
             all_rows.append(row)
             existing_ids.add(cid)  # atualiza deduplicação em memória
