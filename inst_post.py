@@ -201,20 +201,56 @@ def read_profiles_and_links(sheets_service):
 
 
 # ==============================
-# ETAPA 3 — POST INFO (caption + comentários)
+# ETAPA 2 — PERFIL
 # ==============================
+
+def fetch_profile(handle):
+    url = "https://api.sociavault.com/v1/scrape/instagram/profile"
+    headers = {"X-API-Key": SOCIA_API_KEY}
+    params = {"handle": handle}
+    response = requests.get(url, headers=headers, params=params, timeout=API_TIMEOUT)
+    print(f"  Status profile ({handle}): {response.status_code}")
+    response.raise_for_status()
+    data = response.json()
+    user = (
+        data.get("data", {})
+            .get("data", {})
+            .get("user")
+        or data.get("user")
+        or {}
+    )
+    return {
+        "username": user.get("username", handle),
+        "followers_count": user.get("edge_followed_by", {}).get("count", ""),
+        "following_count": user.get("edge_follow", {}).get("count", ""),
+        "total_posts_count": user.get("edge_owner_to_timeline_media", {}).get("count", "")
+    }
+
+
+# ==============================
+# ETAPA 3 — POST INFO (caption + comentários + métricas)
+# ==============================
+
+# Mapeamento de __typename para label legível
+MEDIA_TYPE_MAP = {
+    "XDTGraphImage": "Image",
+    "XDTGraphVideo": "Video",
+    "XDTGraphSidecar": "Carousel",
+}
 
 def fetch_post_info(shortcode):
     """
     Chama o endpoint /post-info e retorna:
     - caption (str): texto de descrição do post
     - comments (list): todos os comentários paginados
+    - post_meta (dict): métricas e metadados do post
     """
     url = "https://api.sociavault.com/v1/scrape/instagram/post-info"
     headers = {"X-API-Key": SOCIA_API_KEY}
 
     all_comments = []
     caption = ""
+    post_meta = {}
     cursor = None
     page = 1
     seen_ids = set()  # controle de IDs já vistos para detectar páginas duplicadas
@@ -241,8 +277,9 @@ def fetch_post_info(shortcode):
                 .get("xdt_shortcode_media", {})
         )
 
-        # Extrai caption apenas na primeira página
+        # Extrai metadados apenas na primeira página
         if page == 1:
+            # Caption
             caption_edges = (
                 media.get("edge_media_to_caption", {})
                      .get("edges", {})
@@ -254,6 +291,42 @@ def fetch_post_info(shortcode):
             else:
                 first = {}
             caption = first.get("node", {}).get("text", "")
+
+            # Métricas e metadados do post
+            typename = media.get("__typename", "")
+            taken_at_raw = media.get("taken_at_timestamp")
+            taken_at = (
+                datetime.fromtimestamp(taken_at_raw, tz=tz_br).strftime("%Y-%m-%d %H:%M:%S")
+                if taken_at_raw else ""
+            )
+
+            owner = media.get("owner", {})
+            username_shared = owner.get("username", "")
+
+            like_count = media.get("edge_media_preview_like", {}).get("count", "")
+            comment_count = media.get("edge_media_preview_comment", {}).get("count", "")
+            play_count = media.get("video_play_count", "")
+
+            preview_image_url = media.get("thumbnail_src", "") or media.get("display_url", "")
+
+            display_resources = media.get("display_resources", {})
+            first_frame_url = ""
+            if isinstance(display_resources, dict) and display_resources:
+                last_key = str(max(int(k) for k in display_resources.keys()))
+                first_frame_url = display_resources.get(last_key, {}).get("src", "")
+            elif isinstance(display_resources, list) and display_resources:
+                first_frame_url = display_resources[-1].get("src", "")
+
+            post_meta = {
+                "username_shared": username_shared,
+                "taken_at": taken_at,
+                "media_type": MEDIA_TYPE_MAP.get(typename, typename),
+                "like_count": like_count,
+                "comment_count": comment_count,
+                "play_count": play_count,
+                "preview_image_url": preview_image_url,
+                "first_frame_url": first_frame_url,
+            }
 
         # Extrai comentários
         comment_data = media.get("edge_media_to_parent_comment", {})
@@ -303,7 +376,7 @@ def fetch_post_info(shortcode):
         page += 1
         time.sleep(1)
 
-    return caption, all_comments
+    return caption, all_comments, post_meta
 
 
 def normalize_comments(comment_nodes, page):
@@ -513,18 +586,27 @@ def classificar_dataframe(df):
 # SALVAMENTO
 # ==============================
 
-def save_post_snapshot_to_sheets(sheets_service, post_entry, caption, run_datetime):
-    """Salva snapshot do post (com caption) no data_profile_post."""
+def save_post_snapshot_to_sheets(sheets_service, post_entry, caption, post_meta, profile_data, run_datetime):
+    """Salva snapshot do post (com todas as métricas) no data_profile_post."""
     row_data = {
         "run_datetime": run_datetime,
         "Plataform": post_entry.get("plataform", "Instagram"),
         "username": post_entry.get("username", ""),
-        "country": post_entry.get("country", ""),
-        "type": post_entry.get("type", ""),
-        "url": post_entry.get("link_of_post", ""),
+        "username_shared": post_meta.get("username_shared", ""),
+        "followers_count": profile_data.get("followers_count", ""),
+        "following_count": profile_data.get("following_count", ""),
+        "total_posts_count": profile_data.get("total_posts_count", ""),
         "code": post_entry.get("shortcode", ""),
-        "date_added": post_entry["date_added"].strftime("%Y-%m-%d %H:%M:%S"),
+        "taken_at": post_meta.get("taken_at", ""),
+        "url": post_entry.get("link_of_post", ""),
+        "media_type": post_meta.get("media_type", ""),
+        "comment_count": post_meta.get("comment_count", ""),
+        "like_count": post_meta.get("like_count", ""),
+        "play_count": post_meta.get("play_count", ""),
+        "preview_image_url": post_meta.get("preview_image_url", ""),
+        "first_frame_url": post_meta.get("first_frame_url", ""),
         "post_caption": caption,
+        "first_extracted_at": run_datetime,
     }
 
     df = pd.DataFrame([row_data])
@@ -622,7 +704,7 @@ def main():
         print("Nenhum post válido para processar. Encerrando.")
         return
 
-    # ETAPA 3 — Para cada post: busca post-info (caption + comentários)
+    # ETAPA 3 — Para cada post: busca post-info (caption + comentários + métricas)
     print(f"\n[ETAPA 3] Processando {len(entries)} post(s)...")
 
     for entry in entries:
@@ -636,17 +718,27 @@ def main():
         print(f"{'=' * 60}")
 
         try:
-            # Busca caption e comentários
-            caption, all_comments = fetch_post_info(shortcode)
+            # Busca dados do perfil
+            print(f"  Buscando perfil de @{username}...")
+            profile_data = fetch_profile(username)
+
+            # Busca caption, comentários e métricas do post
+            caption, all_comments, post_meta = fetch_post_info(shortcode)
 
             if caption:
                 print(f"  Caption: {caption[:100]}{'...' if len(caption) > 100 else ''}")
             else:
                 print(f"  Caption: (vazia)")
 
+            print(f"  username_shared: {post_meta.get('username_shared')} | "
+                  f"media_type: {post_meta.get('media_type')} | "
+                  f"likes: {post_meta.get('like_count')} | "
+                  f"comments: {post_meta.get('comment_count')} | "
+                  f"plays: {post_meta.get('play_count')}")
+
             # Salva snapshot do post no data_profile_post
             _, sheets_service = get_google_services()  # reconecta para evitar timeout
-            save_post_snapshot_to_sheets(sheets_service, entry, caption, run_datetime)
+            save_post_snapshot_to_sheets(sheets_service, entry, caption, post_meta, profile_data, run_datetime)
 
             # Processa comentários
             saved_ids = get_saved_comment_ids(sheets_service, post_url)
