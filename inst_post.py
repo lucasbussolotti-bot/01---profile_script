@@ -34,12 +34,12 @@ POST_EXPIRY_DAYS = 14
 
 # Spreadsheet IDs
 SPREADSHEET_PROFILES_ID = "1VK7_oyA3boJaudPaAiwk7xYl6sxReed63eOYBP9ahxo"
-SPREADSHEET_DATA_PROFILE_ID = "1S86wWk2yO525qC0JQ6IZ6G5gFCYhzzn4Ny6TwZC2E98"
+SPREADSHEET_DATA_PROFILE_ID = "1TvqNwg2GeCpBRNKBw87-qcbsG1yK2BaI8UQEbbZgCBw"
 SPREADSHEET_DATA_COMMENTS_ID = "1dD69AANExCtYQG0g3MX8q5Sv794J0ajkRJ2GLGhaqLI"
 
 # Sheet names
 SHEET_PROFILES = "instagram_profile"
-SHEET_DATA_PROFILE = "data_profile"
+SHEET_DATA_PROFILE = "data_profile_post"
 SHEET_DATA_COMMENTS = "data_comments_post"
 
 tz_br = pytz.timezone("America/Sao_Paulo")
@@ -514,7 +514,7 @@ def classificar_dataframe(df):
 # ==============================
 
 def save_post_snapshot_to_sheets(sheets_service, post_entry, caption, run_datetime):
-    """Salva snapshot do post (com caption) no data_profile."""
+    """Salva snapshot do post (com caption) no data_profile_post."""
     row_data = {
         "run_datetime": run_datetime,
         "Plataform": post_entry.get("plataform", "Instagram"),
@@ -544,7 +544,7 @@ def save_post_snapshot_to_sheets(sheets_service, post_entry, caption, run_dateti
             valueInputOption="RAW",
             body={"values": values}
         ).execute()
-        print(f"  data_profile: 1 linha inserida com cabeçalho.")
+        print(f"  data_profile_post: 1 linha inserida com cabeçalho.")
     else:
         append_values = df.astype(str).values.tolist()
         sheets_service.spreadsheets().values().append(
@@ -554,7 +554,7 @@ def save_post_snapshot_to_sheets(sheets_service, post_entry, caption, run_dateti
             insertDataOption="INSERT_ROWS",
             body={"values": append_values}
         ).execute()
-        print(f"  data_profile: snapshot salvo ({run_datetime}).")
+        print(f"  data_profile_post: snapshot salvo ({run_datetime}).")
 
 
 def save_comments_to_sheets(sheets_service, df):
@@ -644,7 +644,7 @@ def main():
             else:
                 print(f"  Caption: (vazia)")
 
-            # Salva snapshot do post no data_profile
+            # Salva snapshot do post no data_profile_post
             _, sheets_service = get_google_services()  # reconecta para evitar timeout
             save_post_snapshot_to_sheets(sheets_service, entry, caption, run_datetime)
 
