@@ -154,7 +154,7 @@ def classify_comments_batch(client, comments_text):
 def ler_perfis(service):
     print("[ETAPA 1] Lendo perfis do tiktok_profile...", flush=True)
     df = read_sheet(service, SHEET_TIKTOK_PROFILE_ID, TAB_TIKTOK_PROFILE)
-    
+
     if df.empty:
         print("  Nenhum perfil encontrado.", flush=True)
         return []
@@ -325,7 +325,7 @@ def processar_videos(service, username):
 # ==============================
 
 COMMENT_COLS = [
-    "comment_id", "video_id", "text", "create_time",
+    "comment_id", "video_id", "video_url", "text", "create_time",  # ← video_url adicionado
     "likes", "replies_count", "purchase_intent",
     "user_name", "username", "language",
     "classification", "classification_reason"
@@ -422,6 +422,7 @@ def processar_comentarios(service, client, post):
             row = {
                 "comment_id": str(c.get("cid", c.get("comment_id", c.get("id", "")))),
                 "video_id": video_id,
+                "video_url": video_url,  # ← video_url adicionado
                 "text": c.get("text", ""),
                 "create_time": c.get("create_time", ""),
                 "likes": c.get("digg_count", c.get("likes", "")),
