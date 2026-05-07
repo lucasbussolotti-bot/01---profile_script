@@ -4,761 +4,447 @@ import json
 import time
 import requests
 import pandas as pd
-import builtins
-
-from datetime import datetime
+from datetime import datetime, timezone
 from google import genai
-from google.genai import types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import pytz
-
-# Força flush imediato em todos os prints
-_original_print = builtins.print
-def print(*args, **kwargs):
-    kwargs["flush"] = True
-    _original_print(*args, **kwargs)
-
-API_TIMEOUT = 60  # segundos
 
 # ==============================
-# CONFIGURAÇÕES
+# CONFIG
 # ==============================
+SOCIAVAULT_API_KEY = os.environ.get("SOCIAVAULT_API_KEY", "")
+GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
+GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS", "")
 
-SOCIA_API_KEY = os.environ.get("SOCIAVAULT_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+SHEET_INPUT_ID            = "1947Wx86ZtNWQSaqcYVSXv_3WLvIA0p6u_Ol1DZ8GmX8"
+SHEET_TT_DATA_COMMENTS_ID = "1BD4OoVfXZHI6p5kJ6KmLAMsPfpQ86MjdNdVoPPWhgkg"
+SHEET_TT_DATA_POST_ID     = "1CtvNfYM5Jp_kuriycsYMAMzCQYW0pFxqvGmOD0O4n80"
 
-COMMENTS_LIMIT = 100
-BATCH_SIZE = 20
-POST_EXPIRY_DAYS = 14
+TAB_INPUT            = "tiktok_profile"
+TAB_TT_DATA_COMMENTS = "tt_data_comments_post"
+TAB_TT_DATA_POST     = "tt_data_post_post"
 
-# Spreadsheet IDs
-SPREADSHEET_PROFILES_ID = "1VK7_oyA3boJaudPaAiwk7xYl6sxReed63eOYBP9ahxo"
-SPREADSHEET_DATA_PROFILE_ID = "1TvqNwg2GeCpBRNKBw87-qcbsG1yK2BaI8UQEbbZgCBw"
-SPREADSHEET_DATA_COMMENTS_ID = "1dD69AANExCtYQG0g3MX8q5Sv794J0ajkRJ2GLGhaqLI"
-
-# Sheet names
-SHEET_PROFILES = "instagram_profile"
-SHEET_DATA_PROFILE = "data_profile_post"
-SHEET_DATA_COMMENTS = "data_comments_post"
-
-tz_br = pytz.timezone("America/Sao_Paulo")
-
+API_BASE         = "https://api.sociavault.com/v1/scrape/tiktok"
+POST_MAX_DAYS    = 14
+GEMINI_BATCH     = 20
+GEMINI_MAX_RETRY = 2
+COMMENTS_LIMIT   = 100
 
 # ==============================
-# GOOGLE SERVICES
+# GOOGLE SHEETS HELPERS
 # ==============================
 
-def get_google_services():
-    creds_json = json.loads(os.environ.get("GDRIVE_CREDENTIALS"))
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
+def get_google_service():
+    creds_json = json.loads(GDRIVE_CREDENTIALS)
     creds = service_account.Credentials.from_service_account_info(
-        creds_json, scopes=scopes
+        creds_json,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
-    drive_service = build("drive", "v3", credentials=creds)
-    sheets_service = build("sheets", "v4", credentials=creds)
-    return drive_service, sheets_service
+    return build("sheets", "v4", credentials=creds)
 
+
+def read_sheet(service, spreadsheet_id, tab):
+    result = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{tab}!A1:ZZ"
+    ).execute()
+    values = result.get("values", [])
+    if not values:
+        return pd.DataFrame()
+    headers = values[0]
+    rows = values[1:]
+    rows = [r + [""] * (len(headers) - len(r)) for r in rows]
+    return pd.DataFrame(rows, columns=headers)
+
+
+def append_to_sheet(service, spreadsheet_id, tab, df):
+    if df.empty:
+        return
+    values = df.values.tolist()
+    service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"{tab}!A1",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": values}
+    ).execute()
+
+
+def ensure_header(service, spreadsheet_id, tab, columns):
+    result = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{tab}!A1:1"
+    ).execute()
+    existing = result.get("values", [])
+    if not existing:
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{tab}!A1",
+            valueInputOption="RAW",
+            body={"values": [columns]}
+        ).execute()
 
 # ==============================
-# ETAPA 1 — LER PERFIS E LINKS
+# SOCIAVAULT HELPERS
 # ==============================
 
-def extract_shortcode_from_url(url):
-    """
-    Extrai o shortcode de uma URL no formato:
-    https://www.instagram.com/p/SHORTCODE/
-    Retorna None se a URL for inválida.
-    """
-    if not url or not isinstance(url, str):
-        return None
-    match = re.search(r"instagram\.com/p/([A-Za-z0-9_\-]+)", url.strip())
+def sv_get(endpoint, params, timeout=60):
+    headers = {"X-API-Key": SOCIAVAULT_API_KEY}
+    resp = requests.get(
+        f"{API_BASE}/{endpoint}",
+        headers=headers,
+        params=params,
+        timeout=timeout
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+# ==============================
+# GEMINI HELPERS
+# ==============================
+
+def extrair_retry_seconds(error_str):
+    match = re.search(r"retry in ([0-9.]+)s", error_str)
     if match:
-        return match.group(1)
-    return None
+        return float(match.group(1)) + 2
+    return 60.0
+
+
+def classify_comments_batch(client, comments_text):
+    prompt = (
+        "Você é um analista de redes sociais. Classifique cada comentário abaixo como "
+        "'promotor' (positivo, elogio, apoio) ou 'detrator' (negativo, crítica, reclamação).\n"
+        "Para cada comentário, retorne um JSON com os campos 'classification' e 'classification_reason'.\n"
+        "Retorne APENAS uma lista JSON, sem markdown, sem texto extra.\n\n"
+        "Comentários:\n"
+    )
+    for i, text in enumerate(comments_text):
+        prompt += f"{i+1}. {text}\n"
+
+    for attempt in range(1, GEMINI_MAX_RETRY + 1):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            raw = response.text.strip()
+            raw = re.sub(r"^```json|^```|```$", "", raw, flags=re.MULTILINE).strip()
+            return json.loads(raw)
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                wait = extrair_retry_seconds(err_str)
+                if attempt < GEMINI_MAX_RETRY:
+                    print(f"    Rate limit atingido. Aguardando {wait:.0f}s antes de tentar novamente (tentativa {attempt}/{GEMINI_MAX_RETRY})...", flush=True)
+                    time.sleep(wait)
+                else:
+                    print(f"    Rate limit após {GEMINI_MAX_RETRY} tentativas. Marcando lote como FALHA_API.", flush=True)
+                    return [{"classification": "FALHA_API", "classification_reason": "rate limit"} for _ in comments_text]
+            else:
+                print(f"    Erro no Gemini: {e}", flush=True)
+                return [{"classification": "ERRO", "classification_reason": str(e)} for _ in comments_text]
+
+# ==============================
+# ETAPA 1 — LER POSTS DA PLANILHA
+# ==============================
+
+TIKTOK_VIDEO_URL_PATTERN = re.compile(
+    r"https?://(?:www\.)?tiktok\.com/@[\w.]+/video/(\d+)"
+)
+
+def extrair_video_id(link):
+    """Extrai o video_id de um link do TikTok. Retorna (video_id, erro)."""
+    if not link or not link.strip():
+        return None, "Link vazio"
+    link = link.strip()
+    match = TIKTOK_VIDEO_URL_PATTERN.match(link)
+    if not match:
+        return None, f"Link inválido ou fora do padrão TikTok: '{link}'"
+    return match.group(1), None
 
 
 def parse_date(date_str):
-    """
-    Tenta converter a string de data da planilha para datetime com timezone.
-    Suporta formatos comuns do Google Sheets.
-    """
-    if not date_str or not isinstance(date_str, str):
+    """Tenta parsear a data da planilha. Retorna datetime com UTC ou None."""
+    if not date_str or not date_str.strip():
         return None
-
-    formats = [
-        "%m/%d/%Y %H:%M:%S",
-        "%d/%m/%Y %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%m/%d/%Y",
-        "%d/%m/%Y",
-        "%Y-%m-%d",
-    ]
-    for fmt in formats:
+    for fmt in ("%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
         try:
-            dt = datetime.strptime(date_str.strip(), fmt)
-            return tz_br.localize(dt)
+            return datetime.strptime(date_str.strip(), fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             continue
     return None
 
 
-def is_post_expired_by_date(date_added):
-    """Retorna True se o post foi adicionado há mais de 14 dias."""
-    if not date_added:
-        return False
-    hoje = datetime.now(tz_br)
-    return (hoje - date_added).days > POST_EXPIRY_DAYS
+def ler_posts(service):
+    print("[ETAPA 1] Lendo posts da planilha de entrada...", flush=True)
+    df = read_sheet(service, SHEET_INPUT_ID, TAB_INPUT)
 
-
-def read_profiles_and_links(sheets_service):
-    """
-    Lê a planilha instagram_profile e retorna lista de dicts com:
-    - username, link_of_post, shortcode, date_added, plataform, country, type
-    Loga erros para links inválidos e pula posts expirados.
-    """
-    result = sheets_service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_PROFILES_ID,
-        range=f"{SHEET_PROFILES}!A:Z"
-    ).execute()
-
-    rows = result.get("values", [])
-    if len(rows) <= 1:
-        print("Nenhuma linha encontrada na planilha instagram_profile.")
+    if df.empty:
+        print("  Planilha vazia ou sem dados.", flush=True)
         return []
 
-    headers = [h.strip().lower() for h in rows[0]]
-    print(f"Colunas encontradas: {headers}")
+    # Normaliza cabeçalhos
+    df.columns = [c.strip().lower() for c in df.columns]
 
-    # Mapeia colunas pelo nome (case-insensitive)
-    col_map = {}
-    for expected, variants in {
-        "date": ["date"],
-        "plataform": ["plataform", "platform"],
-        "username": ["username"],
-        "country": ["country"],
-        "type": ["type"],
-        "link_of_post": ["link of post", "link_of_post", "linkofpost"],
-    }.items():
-        for variant in variants:
-            if variant in headers:
-                col_map[expected] = headers.index(variant)
-                break
+    required_cols = {"date", "link of post"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        print(f"  ERRO: Colunas obrigatórias não encontradas: {missing}. Colunas disponíveis: {list(df.columns)}", flush=True)
+        return []
 
-    required = ["username", "link_of_post", "date"]
-    for col in required:
-        if col not in col_map:
-            print(f"ERRO: Coluna obrigatória '{col}' não encontrada. Colunas disponíveis: {headers}")
-            return []
+    posts_validos = []
+    now = datetime.now(timezone.utc)
 
-    entries = []
-    for i, row in enumerate(rows[1:], start=2):  # linha 2 em diante (1-indexed)
-        def get_col(key, default=""):
-            idx = col_map.get(key)
-            if idx is None:
-                return default
-            return row[idx].strip() if len(row) > idx else default
+    for i, row in df.iterrows():
+        link      = str(row.get("link of post", "")).strip()
+        date_str  = str(row.get("date", "")).strip()
+        username  = str(row.get("username", "")).strip()
+        plataform = str(row.get("plataform", "")).strip()
 
-        username = get_col("username")
-        link = get_col("link_of_post")
-        date_str = get_col("date")
-        plataform = get_col("plataform", "Instagram")
-        country = get_col("country")
-        post_type = get_col("type")
-
-        # Valida link
-        shortcode = extract_shortcode_from_url(link)
-        if not shortcode:
-            print(f"  [LINHA {i}] Link inválido ou vazio para @{username}: '{link}' — pulando.")
+        # Extrai video_id
+        video_id, erro = extrair_video_id(link)
+        if erro:
+            print(f"  [LINHA {i+2}] PULANDO — {erro}", flush=True)
             continue
 
-        # Valida e parseia data
-        date_added = parse_date(date_str)
-        if not date_added:
-            print(f"  [LINHA {i}] Data inválida para @{username} (link={link}): '{date_str}' — pulando.")
+        # Parseia a data
+        post_date = parse_date(date_str)
+        if post_date is None:
+            print(f"  [LINHA {i+2}] PULANDO — Data inválida ou ausente: '{date_str}' (video_id={video_id})", flush=True)
             continue
 
-        # Verifica expiração
-        if is_post_expired_by_date(date_added):
-            print(f"  [LINHA {i}] Post expirado (>14 dias desde {date_str}) para @{username}: {link} — pulando.")
+        # Verifica janela de 14 dias
+        dias = (now - post_date).days
+        if dias > POST_MAX_DAYS:
+            print(f"  [LINHA {i+2}] IGNORANDO — Post {video_id} de @{username} tem {dias} dias (limite: {POST_MAX_DAYS}).", flush=True)
             continue
 
-        entries.append({
-            "username": username,
-            "link_of_post": link,
-            "shortcode": shortcode,
-            "date_added": date_added,
-            "plataform": plataform,
-            "country": country,
-            "type": post_type,
+        posts_validos.append({
+            "video_id":  video_id,
+            "video_url": link,
+            "username":  username,
+            "post_date": post_date,
+            "dias":      dias,
         })
 
-    print(f"\n{len(entries)} post(s) válido(s) e dentro do prazo encontrado(s).")
-    return entries
-
+    print(f"  {len(posts_validos)} post(s) dentro da janela de {POST_MAX_DAYS} dias.", flush=True)
+    return posts_validos
 
 # ==============================
-# ETAPA 2 — PERFIL
+# ETAPA 2.1 — VIDEO INFO / STATISTICS
 # ==============================
 
-def fetch_profile(handle):
-    url = "https://api.sociavault.com/v1/scrape/instagram/profile"
-    headers = {"X-API-Key": SOCIA_API_KEY}
-    params = {"handle": handle}
-    response = requests.get(url, headers=headers, params=params, timeout=API_TIMEOUT)
-    print(f"  Status profile ({handle}): {response.status_code}")
-    response.raise_for_status()
-    data = response.json()
-    user = (
-        data.get("data", {})
-            .get("data", {})
-            .get("user")
-        or data.get("user")
-        or {}
-    )
-    return {
-        "username": user.get("username", handle),
-        "followers_count": user.get("edge_followed_by", {}).get("count", ""),
-        "following_count": user.get("edge_follow", {}).get("count", ""),
-        "total_posts_count": user.get("edge_owner_to_timeline_media", {}).get("count", "")
+POST_COLS = [
+    "video_url", "run_datetime",
+    "aweme_id", "digg_count", "comment_count", "share_count",
+    "play_count", "collect_count", "download_count", "whatsapp_share_count",
+    "forward_count", "repost_count"
+]
+
+def processar_video_info(service, post):
+    video_url = post["video_url"]
+    video_id  = post["video_id"]
+    print(f"  [2.1] Buscando video-info: {video_url}", flush=True)
+
+    try:
+        data = sv_get("video-info", {"url": video_url})
+    except Exception as e:
+        print(f"    Erro ao buscar video-info de {video_id}: {e}", flush=True)
+        return
+
+    ensure_header(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST, POST_COLS)
+
+    aweme = data.get("data", {}).get("aweme_detail", {})
+    stats = aweme.get("statistics", {})
+
+    row = {
+        "video_url":            video_url,
+        "run_datetime":         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "aweme_id":             stats.get("aweme_id", video_id),
+        "digg_count":           stats.get("digg_count", ""),
+        "comment_count":        stats.get("comment_count", ""),
+        "share_count":          stats.get("share_count", ""),
+        "play_count":           stats.get("play_count", ""),
+        "collect_count":        stats.get("collect_count", ""),
+        "download_count":       stats.get("download_count", ""),
+        "whatsapp_share_count": stats.get("whatsapp_share_count", ""),
+        "forward_count":        stats.get("forward_count", ""),
+        "repost_count":         stats.get("repost_count", ""),
     }
 
+    df_row = pd.DataFrame([row])[POST_COLS]
+    append_to_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST, df_row)
+    print(f"    video-info salvo para {video_id}.", flush=True)
+
 
 # ==============================
-# ETAPA 3 — POST INFO (caption + comentários + métricas)
+# ETAPA 2.2 — COMENTÁRIOS
 # ==============================
 
-# Mapeamento de __typename para label legível
-MEDIA_TYPE_MAP = {
-    "XDTGraphImage": "Image",
-    "XDTGraphVideo": "Video",
-    "XDTGraphSidecar": "Carousel",
-}
+COMMENT_COLS = [
+    "comment_id", "video_id", "text", "create_time",
+    "likes", "replies_count", "purchase_intent",
+    "user_name", "username", "language",
+    "classification", "classification_reason"
+]
 
-def fetch_post_info(shortcode):
-    """
-    Chama o endpoint /post-info e retorna:
-    - caption (str): texto de descrição do post
-    - comments (list): todos os comentários paginados
-    - post_meta (dict): métricas e metadados do post
-    """
-    url = "https://api.sociavault.com/v1/scrape/instagram/post-info"
-    headers = {"X-API-Key": SOCIA_API_KEY}
+def processar_comentarios(service, client, post, existing_ids):
+    video_id  = post["video_id"]
+    video_url = post["video_url"]
+    username  = post["username"]
 
-    all_comments = []
-    caption = ""
-    post_meta = {}
+    print(f"\n  [2.2] Buscando comentários do vídeo: {video_url}", flush=True)
+
+    ensure_header(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, COMMENT_COLS)
+
+    novos  = []
     cursor = None
-    page = 1
-    seen_ids = set()  # controle de IDs já vistos para detectar páginas duplicadas
+    pagina = 1
 
-    while True:
-        post_url_param = f"https://www.instagram.com/p/{shortcode}/"
-        params = {"url": post_url_param}
-        if cursor:
+    while len(novos) < COMMENTS_LIMIT:
+        params = {"url": video_url}
+        if cursor is not None:
             params["cursor"] = cursor
 
-        response = requests.get(url, params=params, headers=headers, timeout=API_TIMEOUT)
-
-        # 404 durante paginação = cursor expirado, trata como fim dos comentários
-        if response.status_code == 404 and page > 1:
-            print(f"    Página {page}: cursor expirado (404), encerrando paginação.")
+        try:
+            data = sv_get("comments", params)
+        except Exception as e:
+            print(f"    Erro ao buscar comentários (página {pagina}) do vídeo {video_id}: {e}", flush=True)
             break
 
-        response.raise_for_status()
-        data = response.json()
-
-        media = (
-            data.get("data", {})
-                .get("data", {})
-                .get("xdt_shortcode_media", {})
-        )
-
-        # Extrai metadados apenas na primeira página
-        if page == 1:
-            # Caption
-            caption_edges = (
-                media.get("edge_media_to_caption", {})
-                     .get("edges", {})
-            )
-            if isinstance(caption_edges, dict):
-                first = caption_edges.get("0", {})
-            elif isinstance(caption_edges, list) and len(caption_edges) > 0:
-                first = caption_edges[0]
-            else:
-                first = {}
-            caption = first.get("node", {}).get("text", "")
-
-            # Métricas e metadados do post
-            typename = media.get("__typename", "")
-            taken_at_raw = media.get("taken_at_timestamp")
-            taken_at = (
-                datetime.fromtimestamp(taken_at_raw, tz=tz_br).strftime("%Y-%m-%d %H:%M:%S")
-                if taken_at_raw else ""
-            )
-
-            owner = media.get("owner", {})
-            username_shared = owner.get("username", "")
-
-            like_count = media.get("edge_media_preview_like", {}).get("count", "")
-            comment_count = media.get("edge_media_preview_comment", {}).get("count", "")
-            play_count = media.get("video_play_count", "")
-
-            preview_image_url = media.get("thumbnail_src", "") or media.get("display_url", "")
-
-            display_resources = media.get("display_resources", {})
-            first_frame_url = ""
-            if isinstance(display_resources, dict) and display_resources:
-                last_key = str(max(int(k) for k in display_resources.keys()))
-                first_frame_url = display_resources.get(last_key, {}).get("src", "")
-            elif isinstance(display_resources, list) and display_resources:
-                first_frame_url = display_resources[-1].get("src", "")
-
-            post_meta = {
-                "username_shared": username_shared,
-                "taken_at": taken_at,
-                "media_type": MEDIA_TYPE_MAP.get(typename, typename),
-                "like_count": like_count,
-                "comment_count": comment_count,
-                "play_count": play_count,
-                "preview_image_url": preview_image_url,
-                "first_frame_url": first_frame_url,
-            }
-
-        # Extrai comentários
-        comment_data = media.get("edge_media_to_parent_comment", {})
-        edges = comment_data.get("edges", {})
-
-        if isinstance(edges, dict):
-            comment_nodes = [v.get("node", {}) for v in edges.values()]
-        elif isinstance(edges, list):
-            comment_nodes = [item.get("node", {}) for item in edges]
+        inner = data.get("data", data)
+        raw   = inner.get("comments", {})
+        if isinstance(raw, dict):
+            comments = list(raw.values())
+        elif isinstance(raw, list):
+            comments = raw
         else:
-            comment_nodes = []
+            comments = []
 
-        # Detecta página duplicada: se todos os IDs já foram vistos, para imediatamente
-        page_ids = {str(node.get("id", "")) for node in comment_nodes if node.get("id")}
-        if page_ids and page_ids.issubset(seen_ids):
-            print(f"    Página {page}: todos os IDs já vistos (API retornou página duplicada), encerrando paginação.")
-            break
-        seen_ids.update(page_ids)
+        print(f"    Página {pagina}: {len(comments)} comentários recebidos.", flush=True)
 
-        page_comments = normalize_comments(comment_nodes, page)
-        all_comments.extend(page_comments)
-        print(f"    Página {page}: {len(page_comments)} comentários")
+        novos_pagina = [
+            c for c in comments
+            if str(c.get("cid", c.get("comment_id", c.get("id", "")))) not in existing_ids
+        ]
+        novos.extend(novos_pagina)
 
-        # Para de paginar se já atingiu o limite
-        if len(all_comments) >= COMMENTS_LIMIT:
-            print(f"    Limite de {COMMENTS_LIMIT} comentários atingido, encerrando paginação.")
-            all_comments = all_comments[:COMMENTS_LIMIT]
+        has_more = inner.get("has_more", 0)
+        cursor   = inner.get("cursor", None)
+        pagina  += 1
+
+        if not has_more or cursor is None:
             break
 
-        # Paginação
-        page_info = comment_data.get("page_info", {})
-        has_next = page_info.get("has_next_page", False)
-
-        if not has_next:
-            break
-
-        raw_cursor = page_info.get("end_cursor")
-        if raw_cursor:
-            try:
-                cursor_obj = json.loads(raw_cursor)
-                cursor = cursor_obj.get("server_cursor", raw_cursor)
-            except (json.JSONDecodeError, TypeError):
-                cursor = raw_cursor
-        else:
-            break
-
-        page += 1
         time.sleep(1)
 
-    return caption, all_comments, post_meta
+    if not novos:
+        print(f"    Sem comentários novos para vídeo {video_id}.", flush=True)
+        return 0
 
+    if len(novos) > COMMENTS_LIMIT:
+        print(f"    Limitando de {len(novos)} para {COMMENTS_LIMIT} comentários.", flush=True)
+        novos = novos[:COMMENTS_LIMIT]
 
-def normalize_comments(comment_nodes, page):
-    comments = []
-    for idx, node in enumerate(comment_nodes, start=1):
-        node["_page"] = page
-        node["_comment_number"] = idx
-        node["_custom_comment_id"] = f"{page}_{idx}"
-        comments.append(node)
-    return comments
+    print(f"    {len(novos)} comentário(s) novo(s) para classificar.", flush=True)
 
+    all_rows = []
+    for i in range(0, len(novos), GEMINI_BATCH):
+        lote   = novos[i:i + GEMINI_BATCH]
+        textos = [c.get("text", c.get("comment", "")) for c in lote]
+        print(f"    Classificando lote {i // GEMINI_BATCH + 1}...", flush=True)
+        classificacoes = classify_comments_batch(client, textos)
 
-def has_emoji(text):
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"
-        "\U0001F300-\U0001F5FF"
-        "\U0001F680-\U0001F6FF"
-        "\U0001F1E0-\U0001F1FF"
-        "\U00002700-\U000027BF"
-        "\U0001F900-\U0001F9FF"
-        "\U00002600-\U000026FF"
-        "]+",
-        flags=re.UNICODE,
-    )
-    return bool(emoji_pattern.search(text))
+        for j, c in enumerate(lote):
+            clf    = classificacoes[j] if j < len(classificacoes) else {"classification": "ERRO", "classification_reason": "sem resposta"}
+            c_user = c.get("user", {})
+            cid    = str(c.get("cid", c.get("comment_id", c.get("id", ""))))
 
-
-def get_saved_comment_ids(sheets_service, post_url):
-    try:
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_DATA_COMMENTS_ID,
-            range=f"{SHEET_DATA_COMMENTS}!A:Z"
-        ).execute()
-        rows = result.get("values", [])
-        if len(rows) <= 1:
-            return set()
-        headers = rows[0]
-        if "id" not in headers or "post_url" not in headers:
-            return set()
-        id_col = headers.index("id")
-        url_col = headers.index("post_url")
-        saved_ids = set()
-        for row in rows[1:]:
-            if len(row) > max(id_col, url_col):
-                if row[url_col].strip() == post_url.strip():
-                    saved_ids.add(row[id_col].strip())
-        print(f"    IDs já salvos para {post_url}: {len(saved_ids)}")
-        return saved_ids
-    except Exception as e:
-        print(f"    Aviso ao ler data_comments: {e}")
-        return set()
-
-
-def comments_to_dataframe(comments, post_url, perfil, saved_ids):
-    rows = []
-    skipped = 0
-
-    for item in comments:
-        comment_id = str(item.get("id", ""))
-        if comment_id in saved_ids:
-            skipped += 1
-            continue
-
-        user = item.get("owner", {})
-        rows.append({
-            "post_url": post_url,
-            "perfil": perfil,
-            "Id Comentário": item.get("_custom_comment_id"),
-            "id": comment_id,
-            "text": item.get("text"),
-            "comment_like_count": item.get("edge_liked_by", {}).get("count"),
-            "child_comment_count": item.get("edge_threaded_comments", {}).get("count", 0),
-            "created_at": item.get("created_at"),
-            "user": json.dumps(user, ensure_ascii=False),
-            "username": user.get("username"),
-            "id_user": user.get("id"),
-            "is_unpublished": item.get("is_restricted_pending"),
-            "pk": user.get("id"),
-            "is_verified": user.get("is_verified")
-        })
-
-    print(f"    Comentários novos: {len(rows)} | Já salvos (ignorados): {skipped}")
-
-    if not rows:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(rows)
-    df = df.fillna("")
-    df["text"] = df["text"].astype(str)
-    df["Id Comentário"] = df["Id Comentário"].astype(str)
-    df["text_debug"] = df["text"].apply(repr)
-    df["tem_emoji"] = df["text"].apply(has_emoji)
-
-    return df
-
-
-# ==============================
-# CLASSIFICAÇÃO GEMINI
-# ==============================
-
-def extrair_retry_seconds(error_message):
-    match = re.search(r"retry in ([0-9.]+)s", str(error_message))
-    if match:
-        return float(match.group(1)) + 2
-    return 60
-
-
-def classificar_lote_comentarios(comentarios, tentativa=1, max_tentativas=2):
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    prompt = f"""
-Você é um especialista em análise de sentimentos para redes sociais.
-Sua tarefa é classificar comentários em 'promotor', 'neutro' ou 'detrator'.
-
-REGRAS CRÍTICAS:
-1. Não existe "neutro" ou não demonstra nenhum tipo de comentário.
-2. Se o comentário for positivo, elogio ou neutro-positivo (ex: "ok", "gostei", emojis), classifique como 'promotor'.
-3. Se houver qualquer reclamação, dúvida técnica, ironia ou crítica, classifique como 'detrator'.
-
-Comentários para análise:
-{json.dumps(comentarios, ensure_ascii=False)}
-"""
-
-    schema = {
-        "type": "object",
-        "properties": {
-            "results": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "Id Comentário": {"type": "string"},
-                        "sentimento_nps": {
-                            "type": "string",
-                            "enum": ["promotor", "detrator"]
-                        },
-                        "justificativa": {"type": "string"}
-                    },
-                    "required": ["Id Comentário", "sentimento_nps", "justificativa"]
-                }
+            row = {
+                "comment_id":            cid,
+                "video_id":              video_id,
+                "text":                  c.get("text", ""),
+                "create_time":           c.get("create_time", ""),
+                "likes":                 c.get("digg_count", c.get("likes", "")),
+                "replies_count":         c.get("reply_comment_total", c.get("replies_count", "")),
+                "purchase_intent":       c.get("is_high_purchase_intent", ""),
+                "user_name":             c_user.get("nickname", c.get("user_name", "")),
+                "username":              c_user.get("unique_id", c.get("username", username)),
+                "language":              c.get("comment_language", c.get("language", "")),
+                "classification":        clf.get("classification", ""),
+                "classification_reason": clf.get("classification_reason", "")
             }
-        },
-        "required": ["results"]
-    }
-
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_json_schema=schema,
-                temperature=0.1
-            )
-        )
-        return json.loads(response.text)["results"]
-
-    except Exception as e:
-        error_str = str(e)
-        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-            wait_seconds = extrair_retry_seconds(error_str)
-            if tentativa <= max_tentativas:
-                print(f"    Rate limit atingido. Aguardando {wait_seconds:.0f}s (tentativa {tentativa}/{max_tentativas})...")
-                time.sleep(wait_seconds)
-                return classificar_lote_comentarios(comentarios, tentativa=tentativa + 1, max_tentativas=max_tentativas)
-            else:
-                print(f"    Máximo de tentativas atingido para este lote.")
-                raise
-        raise
-
-
-def classificar_dataframe(df):
-    resultados = []
-    print(f"    Classificando {len(df)} comentários...")
-
-    for i in range(0, len(df), BATCH_SIZE):
-        lote = df.iloc[i:i + BATCH_SIZE]
-        comentarios_lote = [
-            {"Id Comentário": row["Id Comentário"], "text": row["text"]}
-            for _, row in lote.iterrows()
-        ]
-
-        try:
-            classificados = classificar_lote_comentarios(comentarios_lote)
-            resultados.extend(classificados)
-            print(f"    Lote {i // BATCH_SIZE + 1} OK")
-        except Exception as e:
-            print(f"    Erro no lote {i // BATCH_SIZE + 1}: {e}")
-            for item in comentarios_lote:
-                resultados.append({
-                    "Id Comentário": item["Id Comentário"],
-                    "sentimento_nps": "FALHA_API",
-                    "justificativa": str(e)
-                })
+            all_rows.append(row)
+            existing_ids.add(cid)  # atualiza deduplicação em memória
 
         time.sleep(2)
 
-    df_result = pd.DataFrame(resultados)
-    df_result["Id Comentário"] = df_result["Id Comentário"].astype(str)
-    df = df.drop(columns=["sentimento_nps", "justificativa"], errors="ignore")
-    df = df.merge(df_result, on="Id Comentário", how="left")
+    if all_rows:
+        df_comments = pd.DataFrame(all_rows)[COMMENT_COLS]
+        append_to_sheet(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, df_comments)
+        print(f"    {len(all_rows)} comentário(s) salvo(s) para vídeo {video_id}.", flush=True)
 
-    return df
-
-
-# ==============================
-# SALVAMENTO
-# ==============================
-
-def save_post_snapshot_to_sheets(sheets_service, post_entry, caption, post_meta, profile_data, run_datetime):
-    """Salva snapshot do post (com todas as métricas) no data_profile_post."""
-    row_data = {
-        "run_datetime": run_datetime,
-        "Plataform": post_entry.get("plataform", "Instagram"),
-        "username": post_entry.get("username", ""),
-        "username_shared": post_meta.get("username_shared", ""),
-        "followers_count": profile_data.get("followers_count", ""),
-        "following_count": profile_data.get("following_count", ""),
-        "total_posts_count": profile_data.get("total_posts_count", ""),
-        "code": post_entry.get("shortcode", ""),
-        "taken_at": post_meta.get("taken_at", ""),
-        "url": post_entry.get("link_of_post", ""),
-        "media_type": post_meta.get("media_type", ""),
-        "comment_count": post_meta.get("comment_count", ""),
-        "like_count": post_meta.get("like_count", ""),
-        "play_count": post_meta.get("play_count", ""),
-        "preview_image_url": post_meta.get("preview_image_url", ""),
-        "first_frame_url": post_meta.get("first_frame_url", ""),
-        "post_caption": caption,
-        "first_extracted_at": run_datetime,
-    }
-
-    df = pd.DataFrame([row_data])
-    df = df.fillna("")
-
-    existing_data = sheets_service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
-        range=f"{SHEET_DATA_PROFILE}!A:A"
-    ).execute()
-    existing_rows = existing_data.get("values", [])
-
-    if not existing_rows:
-        values = [df.columns.tolist()] + df.astype(str).values.tolist()
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
-            range=f"{SHEET_DATA_PROFILE}!A1",
-            valueInputOption="RAW",
-            body={"values": values}
-        ).execute()
-        print(f"  data_profile_post: 1 linha inserida com cabeçalho.")
-    else:
-        append_values = df.astype(str).values.tolist()
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
-            range=f"{SHEET_DATA_PROFILE}!A:A",
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": append_values}
-        ).execute()
-        print(f"  data_profile_post: snapshot salvo ({run_datetime}).")
-
-
-def save_comments_to_sheets(sheets_service, df):
-    df = df.fillna("")
-
-    existing_data = sheets_service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_DATA_COMMENTS_ID,
-        range=f"{SHEET_DATA_COMMENTS}!A:A"
-    ).execute()
-    existing_rows = existing_data.get("values", [])
-
-    if not existing_rows:
-        values = [df.columns.tolist()] + df.astype(str).values.tolist()
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_DATA_COMMENTS_ID,
-            range=f"{SHEET_DATA_COMMENTS}!A1",
-            valueInputOption="RAW",
-            body={"values": values}
-        ).execute()
-        print(f"    data_comments: {len(df)} linhas inseridas com cabeçalho.")
-    else:
-        append_values = df.astype(str).values.tolist()
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_DATA_COMMENTS_ID,
-            range=f"{SHEET_DATA_COMMENTS}!A:A",
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": append_values}
-        ).execute()
-        print(f"    data_comments: {len(append_values)} linhas adicionadas.")
-
+    return len(all_rows)
 
 # ==============================
-# EXECUÇÃO PRINCIPAL
+# MAIN
 # ==============================
 
 def main():
-    print("=" * 60)
-    print("INICIANDO PIPELINE INSTAGRAM (MODO LINKS)")
-    print("=" * 60)
+    print("=== TikTok Comments Pipeline ===", flush=True)
 
-    print("\n[CONFIG] Verificando variáveis de ambiente...")
-    missing = []
-    for var in ["SOCIAVAULT_API_KEY", "GEMINI_API_KEY", "GDRIVE_CREDENTIALS"]:
-        val = os.environ.get(var)
-        if not val:
-            missing.append(var)
-            print(f"  ERRO: {var} não encontrada!")
-        else:
-            print(f"  OK: {var} ({len(val)} chars)")
+    print(f"SOCIAVAULT_API_KEY: {'OK' if SOCIAVAULT_API_KEY else 'FALTANDO'}", flush=True)
+    print(f"GEMINI_API_KEY:     {'OK' if GEMINI_API_KEY else 'FALTANDO'}", flush=True)
+    print(f"GDRIVE_CREDENTIALS: {'OK' if GDRIVE_CREDENTIALS else 'FALTANDO'}", flush=True)
 
-    if missing:
-        print(f"\nVariáveis faltando: {missing}. Encerrando.")
+    if not all([SOCIAVAULT_API_KEY, GEMINI_API_KEY, GDRIVE_CREDENTIALS]):
+        print("ERRO: Variáveis de ambiente faltando. Abortando.", flush=True)
         return
 
-    print("\n[CONFIG] Inicializando Google Services...")
-    drive_service, sheets_service = get_google_services()
-    print("  Google Services OK")
+    print("[INIT] Autenticando no Google Sheets...", flush=True)
+    service = get_google_service()
 
-    # ETAPA 1 — Ler perfis e links
-    print("\n[ETAPA 1] Lendo perfis e links de posts...")
-    entries = read_profiles_and_links(sheets_service)
+    print("[INIT] Inicializando cliente Gemini...", flush=True)
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
-    if not entries:
-        print("Nenhum post válido para processar. Encerrando.")
+    # Carrega IDs de comentários já salvos UMA VEZ para toda a execução
+    print("[INIT] Carregando comment_ids já salvos...", flush=True)
+    existing_df = read_sheet(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS)
+    existing_ids = (
+        set(existing_df["comment_id"].astype(str).tolist())
+        if not existing_df.empty and "comment_id" in existing_df.columns
+        else set()
+    )
+    print(f"  {len(existing_ids)} comment_id(s) já existentes carregados.", flush=True)
+
+    # ETAPA 1 — Ler posts válidos
+    posts = ler_posts(service)
+    if not posts:
+        print("Nenhum post para processar. Encerrando.", flush=True)
         return
 
-    # ETAPA 3 — Para cada post: busca post-info (caption + comentários + métricas)
-    print(f"\n[ETAPA 3] Processando {len(entries)} post(s)...")
+    total_salvos = 0
 
-    for entry in entries:
-        shortcode = entry["shortcode"]
-        post_url = entry["link_of_post"]
-        username = entry["username"]
-        run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+    for post in posts:
+        print(f"\n{'='*40}", flush=True)
+        print(f"POST: {post['video_url']} | @{post['username']} | {post['dias']} dia(s) desde publicação", flush=True)
+        print(f"{'='*40}", flush=True)
 
-        print(f"\n{'=' * 60}")
-        print(f"POST: {post_url} (@{username})")
-        print(f"{'=' * 60}")
-
+        # ETAPA 2.1 — Video info + statistics
         try:
-            # Busca dados do perfil
-            print(f"  Buscando perfil de @{username}...")
-            profile_data = fetch_profile(username)
-
-            # Busca caption, comentários e métricas do post
-            caption, all_comments, post_meta = fetch_post_info(shortcode)
-
-            if caption:
-                print(f"  Caption: {caption[:100]}{'...' if len(caption) > 100 else ''}")
-            else:
-                print(f"  Caption: (vazia)")
-
-            print(f"  username_shared: {post_meta.get('username_shared')} | "
-                  f"media_type: {post_meta.get('media_type')} | "
-                  f"likes: {post_meta.get('like_count')} | "
-                  f"comments: {post_meta.get('comment_count')} | "
-                  f"plays: {post_meta.get('play_count')}")
-
-            # Salva snapshot do post no data_profile_post
-            _, sheets_service = get_google_services()  # reconecta para evitar timeout
-            save_post_snapshot_to_sheets(sheets_service, entry, caption, post_meta, profile_data, run_datetime)
-
-            # Processa comentários
-            saved_ids = get_saved_comment_ids(sheets_service, post_url)
-            comments_to_classify = all_comments[-COMMENTS_LIMIT:] if len(all_comments) > COMMENTS_LIMIT else all_comments
-            df_comments = comments_to_dataframe(comments_to_classify, post_url, username, saved_ids)
-
-            if df_comments.empty:
-                print("  Nenhum comentário novo. Pulando classificação.")
-            else:
-                df_comments = classificar_dataframe(df_comments)
-                df_comments["data_execucao"] = run_datetime
-                save_comments_to_sheets(sheets_service, df_comments)
-
+            processar_video_info(service, post)
         except Exception as e:
-            print(f"  ERRO ao processar post {post_url}: {e}. Pulando.")
+            print(f"  Erro em 2.1 para vídeo {post['video_id']}: {e}. Continuando para comentários.", flush=True)
+
+        # ETAPA 2.2 — Comentários
+        try:
+            salvos = processar_comentarios(service, client, post, existing_ids)
+            total_salvos += salvos
+        except Exception as e:
+            print(f"  Erro ao processar vídeo {post['video_id']}: {e}. Pulando.", flush=True)
             continue
 
-    print(f"\n{'=' * 60}")
-    print("PIPELINE FINALIZADO COM SUCESSO")
-    print(f"{'=' * 60}")
+    print(f"\n=== Pipeline finalizado. Total de comentários salvos: {total_salvos} ===", flush=True)
 
 
 if __name__ == "__main__":
