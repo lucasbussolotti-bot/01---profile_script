@@ -235,15 +235,16 @@ def ler_posts(service):
 # ==============================
 
 POST_COLS = [
-    "video_url", "run_datetime",
+    "video_url", "username", "run_datetime",
     "aweme_id", "digg_count", "comment_count", "share_count",
     "play_count", "collect_count", "download_count", "whatsapp_share_count",
-    "forward_count", "repost_count"
+    "forward_count", "repost_count", "desc", "create_time"
 ]
 
 def processar_video_info(service, post):
     video_url = post["video_url"]
     video_id  = post["video_id"]
+    username  = post["username"]  # FIX: obtido corretamente do dict post
     print(f"  [2.1] Buscando video-info: {video_url}", flush=True)
 
     try:
@@ -259,17 +260,20 @@ def processar_video_info(service, post):
 
     row = {
         "video_url":            video_url,
+        "username":             username,                              # FIX: campo adicionado ao POST_COLS
         "run_datetime":         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-        "aweme_id":             stats.get("aweme_id", video_id),
-        "digg_count":           stats.get("digg_count", ""),
+        "aweme_id":             stats.get("aweme_id", video_id),      # FIX: campo faltante adicionado
+        "digg_count":           stats.get("digg_count", ""),          # FIX: chaves alinhadas com POST_COLS
         "comment_count":        stats.get("comment_count", ""),
         "share_count":          stats.get("share_count", ""),
-        "play_count":           stats.get("play_count", ""),
-        "collect_count":        stats.get("collect_count", ""),
+        "play_count":           stats.get("play_count", ""),          # FIX: era "view"
+        "collect_count":        stats.get("collect_count", ""),       # FIX: era "saves"
         "download_count":       stats.get("download_count", ""),
         "whatsapp_share_count": stats.get("whatsapp_share_count", ""),
         "forward_count":        stats.get("forward_count", ""),
         "repost_count":         stats.get("repost_count", ""),
+        "desc":                 aweme.get("desc", ""),                # FIX: buscado em aweme, não em stats
+        "create_time":          aweme.get("create_time", "")         # FIX: era v.get() — variável inexistente
     }
 
     df_row = pd.DataFrame([row])[POST_COLS]
