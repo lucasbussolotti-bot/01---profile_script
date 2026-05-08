@@ -31,7 +31,7 @@ MAX_POSTS        = 5
 POST_MAX_DAYS    = 14
 GEMINI_BATCH     = 20
 GEMINI_MAX_RETRY = 2
-COMMENTS_LIMIT   = 100  # máximo de comentários novos por vídeo
+COMMENTS_LIMIT   = 100
 
 # ==============================
 # GOOGLE SHEETS HELPERS
@@ -202,18 +202,18 @@ def processar_perfil(service, username):
     stats = inner.get("statsV2", inner.get("stats", {}))
 
     row = {
-        "user_id": str(user.get("id", "")),
-        "username": user.get("uniqueId", username),
-        "nickname": user.get("nickname", ""),
-        "verified": user.get("verified", ""),
-        "followers": stats.get("followerCount", ""),
-        "following": stats.get("followingCount", ""),
-        "likes": stats.get("heartCount", ""),
-        "videos": stats.get("videoCount", ""),
-        "bio": user.get("signature", ""),
-        "language": user.get("language", ""),
+        "user_id":         str(user.get("id", "")),
+        "username":        user.get("uniqueId", username),
+        "nickname":        user.get("nickname", ""),
+        "verified":        user.get("verified", ""),
+        "followers":       stats.get("followerCount", ""),
+        "following":       stats.get("followingCount", ""),
+        "likes":           stats.get("heartCount", ""),
+        "videos":          stats.get("videoCount", ""),
+        "bio":             user.get("signature", ""),
+        "language":        user.get("language", ""),
         "is_organization": user.get("isOrganization", ""),
-        "run_datetime": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        "run_datetime":    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     }
     df_row = pd.DataFrame([row])[PROFILE_COLS]
     append_to_sheet(service, SHEET_TT_DATA_PROFILE_ID, TAB_TT_DATA_PROFILE, df_row)
@@ -231,14 +231,12 @@ POST_COLS = [
     "video_id", "description", "create_time", "author",
     "username", "followers", "likes", "comments",
     "views", "shares", "first_extracted_at", "video_url",
-    # Colunas adicionais vindas do video-info
     "digg_count", "comment_count", "share_count", "play_count",
     "collect_count", "download_count", "whatsapp_share_count",
     "forward_count", "repost_count"
 ]
 
 def buscar_video_info(video_url, video_id):
-    """Chama o endpoint video-info e retorna as estatísticas detalhadas."""
     try:
         data = sv_get("video-info", {"url": video_url})
         aweme = data.get("data", {}).get("aweme_detail", {})
@@ -294,7 +292,11 @@ def processar_videos(service, username):
     ensure_header(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST, POST_COLS)
 
     existing_df = read_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST)
-    existing_ids = set(existing_df["video_id"].astype(str).tolist()) if not existing_df.empty and "video_id" in existing_df.columns else set()
+    existing_ids = (
+        set(existing_df["video_id"].astype(str).tolist())
+        if not existing_df.empty and "video_id" in existing_df.columns
+        else set()
+    )
 
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     novos = []
@@ -309,7 +311,7 @@ def processar_videos(service, username):
             author_name    = author_obj.get("nickname", "")
             follower_count = author_obj.get("follower_count", "")
         else:
-            author_name    = author_obj
+            author_name    = str(author_obj)
             follower_count = v.get("followers", "")
 
         stats    = v.get("statistics", {})
@@ -320,7 +322,6 @@ def processar_videos(service, username):
 
         video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
 
-        # Chamada adicional ao endpoint video-info
         print(f"      Buscando video-info para {video_id}...", flush=True)
         video_info = buscar_video_info(video_url, video_id)
 
@@ -337,7 +338,6 @@ def processar_videos(service, username):
             "shares":               shares,
             "first_extracted_at":   now_str,
             "video_url":            video_url,
-            # Dados do video-info
             "digg_count":           video_info["digg_count"],
             "comment_count":        video_info["comment_count"],
             "share_count":          video_info["share_count"],
@@ -375,23 +375,17 @@ COMMENT_COLS = [
 ]
 
 def processar_comentarios(service, client, post):
-    video_id        = str(post.get("video_id", ""))
-    video_url       = post.get("video_url", "")
-    first_extracted = post.get("first_extracted_at", "")
-
-    try:
-        extracted_dt = datetime.strptime(first_extracted, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        dias = (datetime.now(timezone.utc) - extracted_dt).days
-        if dias > POST_MAX_DAYS:
-            print(f"    Post {video_id} tem {dias} dias. Pulando comentários.", flush=True)
-            return
-    except Exception:
-        pass
+    video_id  = str(post.get("video_id", ""))
+    video_url = post.get("video_url", "")
 
     print(f"    [2.2] Buscando comentários do vídeo: {video_url}", flush=True)
 
     existing_df = read_sheet(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS)
-    existing_ids = set(existing_df["comment_id"].astype(str).tolist()) if not existing_df.empty and "comment_id" in existing_df.columns else set()
+    existing_ids = (
+        set(existing_df["comment_id"].astype(str).tolist())
+        if not existing_df.empty and "comment_id" in existing_df.columns
+        else set()
+    )
 
     ensure_header(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, COMMENT_COLS)
 
