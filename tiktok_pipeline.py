@@ -170,6 +170,7 @@ def ler_perfis(service):
         .rename(columns={"username": "profile"})
         .dropna(subset=["profile"])
         .assign(date_added="")
+        .drop_duplicates(subset=["profile"])  # ← CORREÇÃO: evita processar o mesmo perfil mais de uma vez
         .to_dict("records")
     )
     perfis = [p for p in perfis if p["profile"].strip()]
