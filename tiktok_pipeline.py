@@ -159,7 +159,6 @@ def ler_perfis(service):
         print("  Nenhum perfil encontrado.", flush=True)
         return []
 
-    # Normaliza os cabeçalhos para minúsculo
     df.columns = [c.strip().lower() for c in df.columns]
 
     if "username" not in df.columns:
@@ -231,8 +230,38 @@ def processar_perfil(service, username):
 POST_COLS = [
     "video_id", "description", "create_time", "author",
     "username", "followers", "likes", "comments",
-    "views", "shares", "first_extracted_at", "video_url"
+    "views", "shares", "first_extracted_at", "video_url",
+    # Colunas adicionais vindas do video-info
+    "digg_count", "comment_count", "share_count", "play_count",
+    "collect_count", "download_count", "whatsapp_share_count",
+    "forward_count", "repost_count"
 ]
+
+def buscar_video_info(video_url, video_id):
+    """Chama o endpoint video-info e retorna as estatísticas detalhadas."""
+    try:
+        data = sv_get("video-info", {"url": video_url})
+        aweme = data.get("data", {}).get("aweme_detail", {})
+        stats = aweme.get("statistics", {})
+        return {
+            "digg_count":           stats.get("digg_count", ""),
+            "comment_count":        stats.get("comment_count", ""),
+            "share_count":          stats.get("share_count", ""),
+            "play_count":           stats.get("play_count", ""),
+            "collect_count":        stats.get("collect_count", ""),
+            "download_count":       stats.get("download_count", ""),
+            "whatsapp_share_count": stats.get("whatsapp_share_count", ""),
+            "forward_count":        stats.get("forward_count", ""),
+            "repost_count":         stats.get("repost_count", ""),
+        }
+    except Exception as e:
+        print(f"      Erro ao buscar video-info de {video_id}: {e}", flush=True)
+        return {
+            "digg_count": "", "comment_count": "", "share_count": "",
+            "play_count": "", "collect_count": "", "download_count": "",
+            "whatsapp_share_count": "", "forward_count": "", "repost_count": ""
+        }
+
 
 def processar_videos(service, username):
     print(f"  [2.1] Buscando vídeos de: {username}", flush=True)
@@ -277,13 +306,13 @@ def processar_videos(service, username):
 
         author_obj = v.get("author", {})
         if isinstance(author_obj, dict):
-            author_name = author_obj.get("nickname", "")
+            author_name    = author_obj.get("nickname", "")
             follower_count = author_obj.get("follower_count", "")
         else:
-            author_name = author_obj
+            author_name    = author_obj
             follower_count = v.get("followers", "")
 
-        stats = v.get("statistics", {})
+        stats    = v.get("statistics", {})
         likes    = stats.get("digg_count", v.get("likes", ""))
         comments = stats.get("comment_count", v.get("comments", ""))
         views    = stats.get("play_count", v.get("views", ""))
@@ -291,19 +320,33 @@ def processar_videos(service, username):
 
         video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
 
+        # Chamada adicional ao endpoint video-info
+        print(f"      Buscando video-info para {video_id}...", flush=True)
+        video_info = buscar_video_info(video_url, video_id)
+
         row = {
-            "video_id": video_id,
-            "description": v.get("desc", v.get("description", "")),
-            "create_time": v.get("create_time", v.get("createTime", "")),
-            "author": author_name,
-            "username": username,
-            "followers": follower_count,
-            "likes": likes,
-            "comments": comments,
-            "views": views,
-            "shares": shares,
-            "first_extracted_at": now_str,
-            "video_url": video_url
+            "video_id":             video_id,
+            "description":          v.get("desc", v.get("description", "")),
+            "create_time":          v.get("create_time", v.get("createTime", "")),
+            "author":               author_name,
+            "username":             username,
+            "followers":            follower_count,
+            "likes":                likes,
+            "comments":             comments,
+            "views":                views,
+            "shares":               shares,
+            "first_extracted_at":   now_str,
+            "video_url":            video_url,
+            # Dados do video-info
+            "digg_count":           video_info["digg_count"],
+            "comment_count":        video_info["comment_count"],
+            "share_count":          video_info["share_count"],
+            "play_count":           video_info["play_count"],
+            "collect_count":        video_info["collect_count"],
+            "download_count":       video_info["download_count"],
+            "whatsapp_share_count": video_info["whatsapp_share_count"],
+            "forward_count":        video_info["forward_count"],
+            "repost_count":         video_info["repost_count"],
         }
         novos.append(row)
 
@@ -325,7 +368,7 @@ def processar_videos(service, username):
 # ==============================
 
 COMMENT_COLS = [
-    "comment_id", "video_id", "video_url", "text", "create_time",  # ← video_url adicionado
+    "comment_id", "video_id", "video_url", "text", "create_time",
     "likes", "replies_count", "purchase_intent",
     "user_name", "username", "language",
     "classification", "classification_reason"
@@ -336,7 +379,6 @@ def processar_comentarios(service, client, post):
     video_url       = post.get("video_url", "")
     first_extracted = post.get("first_extracted_at", "")
 
-    # Checar 14 dias
     try:
         extracted_dt = datetime.strptime(first_extracted, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         dias = (datetime.now(timezone.utc) - extracted_dt).days
@@ -348,14 +390,12 @@ def processar_comentarios(service, client, post):
 
     print(f"    [2.2] Buscando comentários do vídeo: {video_url}", flush=True)
 
-    # Lê IDs já salvos
     existing_df = read_sheet(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS)
     existing_ids = set(existing_df["comment_id"].astype(str).tolist()) if not existing_df.empty and "comment_id" in existing_df.columns else set()
 
     ensure_header(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, COMMENT_COLS)
 
-    # Paginação até atingir COMMENTS_LIMIT ou não ter mais páginas
-    novos = []
+    novos  = []
     cursor = None
     pagina = 1
 
@@ -371,7 +411,7 @@ def processar_comentarios(service, client, post):
             break
 
         inner = data.get("data", data)
-        raw = inner.get("comments", {})
+        raw   = inner.get("comments", {})
         if isinstance(raw, dict):
             comments = list(raw.values())
         elif isinstance(raw, list):
@@ -381,7 +421,6 @@ def processar_comentarios(service, client, post):
 
         print(f"      Página {pagina}: {len(comments)} comentários recebidos.", flush=True)
 
-        # Filtra apenas novos
         novos_pagina = [
             c for c in comments
             if str(c.get("cid", c.get("comment_id", c.get("id", "")))) not in existing_ids
@@ -395,43 +434,41 @@ def processar_comentarios(service, client, post):
         if not has_more or cursor is None:
             break
 
-        time.sleep(1)  # respeita rate limit entre páginas
+        time.sleep(1)
 
     if not novos:
         print(f"      Sem comentários novos para vídeo {video_id}.", flush=True)
         return
 
-    # Limita ao COMMENTS_LIMIT
     if len(novos) > COMMENTS_LIMIT:
         print(f"      Limitando de {len(novos)} para {COMMENTS_LIMIT} comentários.", flush=True)
         novos = novos[:COMMENTS_LIMIT]
 
     print(f"      {len(novos)} comentário(s) novo(s) para classificar.", flush=True)
 
-    # Classificar em lotes
     all_rows = []
     for i in range(0, len(novos), GEMINI_BATCH):
-        lote = novos[i:i + GEMINI_BATCH]
+        lote   = novos[i:i + GEMINI_BATCH]
         textos = [c.get("text", c.get("comment", "")) for c in lote]
         print(f"      Classificando lote {i // GEMINI_BATCH + 1}...", flush=True)
         classificacoes = classify_comments_batch(client, textos)
 
         for j, c in enumerate(lote):
-            clf = classificacoes[j] if j < len(classificacoes) else {"classification": "ERRO", "classification_reason": "sem resposta"}
+            clf    = classificacoes[j] if j < len(classificacoes) else {"classification": "ERRO", "classification_reason": "sem resposta"}
             c_user = c.get("user", {})
             row = {
-                "comment_id": str(c.get("cid", c.get("comment_id", c.get("id", "")))),
-                "video_id": video_id,
-                "video_url": video_url,  # ← video_url adicionado
-                "text": c.get("text", ""),
-                "create_time": c.get("create_time", ""),
-                "likes": c.get("digg_count", c.get("likes", "")),
-                "replies_count": c.get("reply_comment_total", c.get("replies_count", "")),
-                "purchase_intent": c.get("is_high_purchase_intent", ""),
-                "user_name": c_user.get("nickname", c.get("user_name", "")),
-                "username": c_user.get("unique_id", c.get("username", "")),
-                "language": c.get("comment_language", c.get("language", "")),
-                "classification": clf.get("classification", ""),
+                "comment_id":            str(c.get("cid", c.get("comment_id", c.get("id", "")))),
+                "video_id":              video_id,
+                "video_url":             video_url,
+                "text":                  c.get("text", ""),
+                "create_time":           c.get("create_time", ""),
+                "likes":                 c.get("digg_count", c.get("likes", "")),
+                "replies_count":         c.get("reply_comment_total", c.get("replies_count", "")),
+                "purchase_intent":       c.get("is_high_purchase_intent", ""),
+                "user_name":             c_user.get("nickname", c.get("user_name", "")),
+                "username":              c_user.get("unique_id", c.get("username", "")),
+                "language":              c.get("comment_language", c.get("language", "")),
+                "classification":        clf.get("classification", ""),
                 "classification_reason": clf.get("classification_reason", "")
             }
             all_rows.append(row)
@@ -463,7 +500,6 @@ def main():
     print("[INIT] Inicializando cliente Gemini...", flush=True)
     client = genai.Client(api_key=GEMINI_API_KEY)
 
-    # ETAPA 1 — Ler perfis
     perfis = ler_perfis(service)
     if not perfis:
         return
@@ -474,7 +510,6 @@ def main():
         print(f"PERFIL: @{username}", flush=True)
         print(f"{'='*40}", flush=True)
 
-        # ETAPA 2.0 — Dados do perfil + captura do handle real
         try:
             result = processar_perfil(service, username)
             if result is None:
@@ -485,7 +520,6 @@ def main():
             print(f"  Erro em 2.0 para {username}: {e}. Pulando.", flush=True)
             continue
 
-        # ETAPA 2.1 — Vídeos usando o handle real da API
         try:
             posts = processar_videos(service, real_handle)
         except Exception as e:
@@ -496,7 +530,6 @@ def main():
             print(f"  Sem posts para processar comentários de {real_handle}.", flush=True)
             continue
 
-        # ETAPA 2.2 — Comentários de cada vídeo
         for post in posts:
             try:
                 processar_comentarios(service, client, post)
