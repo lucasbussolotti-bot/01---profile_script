@@ -95,8 +95,18 @@ def read_profiles(sheets_service):
             if username:
                 profiles.append({"profile": username, "date_added": ""})
 
-    print(f"{len(profiles)} perfil(is) encontrado(s): {[p['profile'] for p in profiles]}")
-    return profiles
+    print(f"{len(profiles)} perfil(is) encontrado(s) na planilha.")
+
+    # FIX: Deduplicação de perfis — evita reprocessar o mesmo handle múltiplas vezes
+    seen = set()
+    profiles_unique = []
+    for p in profiles:
+        if p["profile"] not in seen:
+            seen.add(p["profile"])
+            profiles_unique.append(p)
+
+    print(f"Após deduplicação: {len(profiles_unique)} perfil(is) único(s): {[p['profile'] for p in profiles_unique]}")
+    return profiles_unique
 
 def fetch_profile(handle):
     url = "https://api.sociavault.com/v1/scrape/instagram/profile"
@@ -358,6 +368,11 @@ def fetch_post_info(shortcode):
             comment_nodes = [item.get("node", {}) for item in edges]
         else:
             comment_nodes = []
+
+        # FIX: página sem comentários = API bugada com has_next_page: True infinito
+        if not comment_nodes:
+            print(f"    Página {page}: sem comentários, encerrando paginação.")
+            break
 
         # Detecta página duplicada: se todos os IDs já foram vistos, para imediatamente
         page_ids = {str(node.get("id", "")) for node in comment_nodes if node.get("id")}
