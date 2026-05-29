@@ -2,7 +2,7 @@ name: Rodar Script Diário - TikTok Post
 
 on:
   schedule:
-    - cron: '30 16 * * *'  # 13h30 horário de Brasília
+    - cron: '00 8 * * *'  # 13h30 horário de Brasília
   workflow_dispatch:
 
 jobs:
