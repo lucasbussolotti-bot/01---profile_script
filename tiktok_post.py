@@ -112,11 +112,15 @@ def extrair_retry_seconds(error_str):
 
 def classify_comments_batch(client, comments_text):
     prompt = (
-        "Você é um analista de redes sociais. Classifique cada comentário abaixo como "
-        "'promotor' (positivo, elogio, apoio) ou 'detrator' (negativo, crítica, reclamação).\n"
-        "Para cada comentário, retorne um JSON com os campos 'classification' e 'classification_reason'.\n"
-        "Retorne APENAS uma lista JSON, sem markdown, sem texto extra.\n\n"
-        "Comentários:\n"
+        "Você é um especialista em análise de sentimentos para redes sociais.
+         Sua tarefa é classificar comentários em 'promotor', 'neutro' ou 'detrator'.
+
+         REGRAS CRÍTICAS:
+         1. Existe comentário neutro, então caso você acredite que não seja nem detrator e nem promotor pode usar essa classificação.
+         2. Se o comentário for positivo, elogio ou neutro-positivo (ex: "ok", "gostei", emojis), classifique como 'promotor'.
+         3. Se houver qualquer reclamação, dúvida técnica, ironia ou crítica, classifique como 'detrator'.
+
+         Comentários para análise:"
     )
     for i, text in enumerate(comments_text):
         prompt += f"{i+1}. {text}\n"
