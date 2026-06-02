@@ -492,7 +492,7 @@ Você é um especialista em análise de sentimentos para redes sociais.
 Sua tarefa é classificar comentários em 'promotor', 'neutro' ou 'detrator'.
 
 REGRAS CRÍTICAS:
-1. Não existe "neutro" ou não demonstra nenhum tipo de comentário.
+1. Existe comentário neutro, então caso você acredite que não seja nem detrator e nem promotor pode usar essa classificação.
 2. Se o comentário for positivo, elogio ou neutro-positivo (ex: "ok", "gostei", emojis), classifique como 'promotor'.
 3. Se houver qualquer reclamação, dúvida técnica, ironia ou crítica, classifique como 'detrator'.
 
