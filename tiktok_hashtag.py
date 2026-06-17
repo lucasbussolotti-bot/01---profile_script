@@ -475,6 +475,9 @@ def main():
         share_url = post["share_url"]
         hashtag   = post["hashtag"]
         country   = post["country"]
+        marca_kc = post["marca_kc"]
+        competidor = post["competidor"]
+        pais = post["pais"]
 
         if share_url in processed_urls:
             print(f"  [{i}/{len(all_posts)}] Já processado, pulando.")
