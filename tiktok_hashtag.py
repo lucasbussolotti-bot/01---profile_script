@@ -406,32 +406,40 @@ def main():
     print(f"[ETAPA 2] Buscando posts por hashtag...")
     print(f"{'=' * 60}")
 
-    existing_urls = get_existing_urls_posts(sheets_service)
-    run_datetime  = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+        existing_urls = get_existing_urls_posts(sheets_service)
+    run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+
     new_post_rows = []
-    # Acumula todos os posts (novos + já existentes) para processar na etapa 3
+
+    # Acumula todos os posts para etapa 3
     all_posts = []
 
     for entry in entries:
+
         hashtag = entry["hashtag"]
         country = entry["country"]
-
         marca_kc = entry["marca_kc"]
         competidor = entry["competidor"]
         pais = entry["pais"]
 
-        print(f"\n  HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
+        print(
+            f"\n  HASHTAG: #{hashtag}" +
+            (f" | PAÍS: {country}" if country else " | PAÍS: todos")
+        )
 
         try:
             posts = fetch_posts_by_hashtag(hashtag)
-        
+
         except Exception as e:
             print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
             continue
 
+
         for post in posts:
+
             share_url = post["share_url"]
             region = post["region"]
+
 
             all_posts.append({
                 "share_url": share_url,
@@ -442,24 +450,31 @@ def main():
                 "pais": pais
             })
 
-        if share_url in existing_urls:
-            continue
 
-        new_post_rows.append([
-            hashtag,
-            share_url,
-            country,
-            marca_kc,
-            competidor,
-            pais,
-            region,
-            run_datetime
-        ])
+            if share_url in existing_urls:
+                continue
 
-        existing_urls.add(share_url)
 
-    print(f"    Novos posts para #{hashtag}: {sum(1 for r in new_post_rows if r[0] == hashtag)}")
-    time.sleep(1)
+            new_post_rows.append([
+                hashtag,
+                share_url,
+                country,
+                marca_kc,
+                competidor,
+                pais,
+                region,
+                run_datetime
+            ])
+
+            existing_urls.add(share_url)
+
+
+        print(
+            f"    Novos posts para #{hashtag}: "
+            f"{sum(1 for r in new_post_rows if r[0] == hashtag)}"
+        )
+
+        time.sleep(1)
 
     # Salva posts novos em Hashtag_posts
     sheets_service = get_google_services()
