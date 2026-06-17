@@ -410,48 +410,50 @@ def main():
     # Acumula todos os posts (novos + já existentes) para processar na etapa 3
     all_posts     = []
 
-    for entry in entries:
-        hashtag = entry["hashtag"]
-        country = entry["country"]
-        marca_kc = post["marca_kc"]
-        competidor = post["competidor"]
-        pais = post["pais"]
+for entry in entries:
+    hashtag = entry["hashtag"]
+    country = entry["country"]
 
-        print(f"\n  HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
+    marca_kc = entry["marca_kc"]
+    competidor = entry["competidor"]
+    pais = entry["pais"]
 
-        try:
-            posts = fetch_posts_by_hashtag(hashtag)
-        except Exception as e:
-            print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
-            continue
+    print(f"\n  HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
 
-        for post in posts:
-            share_url = post["share_url"]
-            region    = post["region"]
+    try:
+        posts = fetch_posts_by_hashtag(hashtag)
+    except Exception as e:
+        print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
+        continue
 
-            all_posts.append({
+    for post in posts:
+        share_url = post["share_url"]
+        region = post["region"]
+
+        all_posts.append({
             "share_url": share_url,
             "hashtag": hashtag,
             "country": country,
-            "marca_kc": entry["marca_kc"],
-            "competidor": entry["competidor"],
-            "pais": entry["pais"]
-            })
+            "marca_kc": marca_kc,
+            "competidor": competidor,
+            "pais": pais
+        })
 
-            if share_url in existing_urls:
-                continue
+        if share_url in existing_urls:
+            continue
 
-            new_post_rows.append([
+        new_post_rows.append([
             hashtag,
             share_url,
             country,
-            entry["marca_kc"],
-            entry["competidor"],
-            entry["pais"],
+            marca_kc,
+            competidor,
+            pais,
             region,
             run_datetime
-            ])
-            existing_urls.add(share_url)
+        ])
+
+        existing_urls.add(share_url)
 
         print(f"    Novos posts para #{hashtag}: {sum(1 for r in new_post_rows if r[0] == hashtag)}")
         time.sleep(1)
