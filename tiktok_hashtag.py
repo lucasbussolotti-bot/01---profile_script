@@ -422,25 +422,25 @@ def main():
 
         print(f"\n  HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
 
-    try:
-        posts = fetch_posts_by_hashtag(hashtag)
+        try:
+            posts = fetch_posts_by_hashtag(hashtag)
         
-    except Exception as e:
-        print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
-        continue
+        except Exception as e:
+            print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
+            continue
 
-    for post in posts:
-        share_url = post["share_url"]
-        region = post["region"]
+        for post in posts:
+            share_url = post["share_url"]
+            region = post["region"]
 
-        all_posts.append({
-            "share_url": share_url,
-            "hashtag": hashtag,
-            "country": country,
-            "marca_kc": marca_kc,
-            "competidor": competidor,
-            "pais": pais
-        })
+            all_posts.append({
+                "share_url": share_url,
+                "hashtag": hashtag,
+                "country": country,
+                "marca_kc": marca_kc,
+                "competidor": competidor,
+                "pais": pais
+            })
 
         if share_url in existing_urls:
             continue
@@ -458,8 +458,8 @@ def main():
 
         existing_urls.add(share_url)
 
-        print(f"    Novos posts para #{hashtag}: {sum(1 for r in new_post_rows if r[0] == hashtag)}")
-        time.sleep(1)
+    print(f"    Novos posts para #{hashtag}: {sum(1 for r in new_post_rows if r[0] == hashtag)}")
+    time.sleep(1)
 
     # Salva posts novos em Hashtag_posts
     sheets_service = get_google_services()
