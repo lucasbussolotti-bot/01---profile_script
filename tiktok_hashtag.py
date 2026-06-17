@@ -87,27 +87,29 @@ def read_hashtags(sheets_service):
     for row in rows[1:]:
         if len(row) <= col_hashtag:
             continue
+            
         tag = row[col_hashtag].strip().lstrip("#")
+        
         if not tag:
             continue
 
-    country = row[col_country].strip().upper() if len(row) > col_country else ""
-    marca_kc = row[col_marca_kc].strip() if len(row) > col_marca_kc else ""
-    competidor = row[col_competidor].strip() if len(row) > col_competidor else ""
-    pais = row[col_pais].strip() if len(row) > col_pais else ""
+        country = row[col_country].strip().upper() if len(row) > col_country else ""
+        marca_kc = row[col_marca_kc].strip() if len(row) > col_marca_kc else ""
+        competidor = row[col_competidor].strip() if len(row) > col_competidor else ""
+        pais = row[col_pais].strip() if len(row) > col_pais else ""
 
-    key = (tag.lower(), country, marca_kc, competidor, pais)
+        key = (tag.lower(), country, marca_kc, competidor, pais)
 
-    if key not in seen:
-        seen.add(key)
+        if key not in seen:
+            seen.add(key)
 
-        entries.append({
-            "hashtag": tag,
-            "country": country,
-            "marca_kc": marca_kc,
-            "competidor": competidor,
-            "pais": pais
-        })
+            entries.append({
+                "hashtag": tag,
+                "country": country,
+                "marca_kc": marca_kc,
+                "competidor": competidor,
+                "pais": pais
+            })
 
     print(f"  {len(entries)} entrada(s) única(s) encontrada(s):")
     for e in entries:
@@ -260,7 +262,7 @@ def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pa
     duration = detail.get("video", {}).get("duration", "") or detail.get("duration", "")
 
     return [
-        share_url, hashtag, country, run_datetime,
+        share_url, hashtag, country, marca_kc, competidor, paid, run_datetime, 
         detail.get("aweme_id", ""),
         detail.get("desc", ""),
         create_time,
@@ -408,7 +410,7 @@ def main():
     run_datetime  = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
     new_post_rows = []
     # Acumula todos os posts (novos + já existentes) para processar na etapa 3
-all_posts     = []
+    all_posts = []
 
     for entry in entries:
         hashtag = entry["hashtag"]
@@ -422,6 +424,7 @@ all_posts     = []
 
     try:
         posts = fetch_posts_by_hashtag(hashtag)
+        
     except Exception as e:
         print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
         continue
