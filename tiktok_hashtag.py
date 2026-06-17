@@ -72,9 +72,8 @@ def read_hashtags(sheets_service):
         print(f"Coluna 'Hashtag' não encontrada. Colunas disponíveis: {headers}")
         return []
 
-     col_hashtag = headers.index("hashtag")
+    col_hashtag = headers.index("hashtag")
     col_country = headers.index("country")
-
     col_marca_kc = headers.index("marca_kc")
     col_competidor = headers.index("competidor")
     col_pais = headers.index("pais")
