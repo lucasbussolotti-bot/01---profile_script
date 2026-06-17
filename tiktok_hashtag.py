@@ -109,7 +109,7 @@ def read_hashtags(sheets_service):
 # ETAPA 2 — BUSCAR POSTS POR HASHTAG
 # ==============================
 
-def fetch_posts_by_hashtag(hashtag, country_filter=""):
+def fetch_posts_by_hashtag(hashtag):
     url = "https://api.sociavault.com/v1/scrape/tiktok/search/hashtag"
     headers = {"X-API-Key": SOCIA_API_KEY}
     params = {"hashtag": hashtag, "count": POSTS_LIMIT}
@@ -130,7 +130,6 @@ def fetch_posts_by_hashtag(hashtag, country_filter=""):
         return []
 
     results = []
-    skipped = 0
 
     for item in items:
         share_url = (
@@ -141,15 +140,14 @@ def fetch_posts_by_hashtag(hashtag, country_filter=""):
         if not share_url:
             continue
 
-        region = item.get("author", {}).get("region", "").upper()
-
-        if country_filter and region != country_filter:
-            skipped += 1
-            continue
+        region = (
+            item.get("author", {}).get("region", "")
+            or item.get("region", "")
+        ).upper()
 
         results.append({"share_url": share_url, "region": region})
 
-    print(f"    Posts encontrados: {len(results)}" + (f" | Filtrados por país: {skipped}" if skipped else ""))
+    print(f"    Posts encontrados: {len(results)}")
     return results
 
 
@@ -398,7 +396,7 @@ def main():
         print(f"\n  HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
 
         try:
-            posts = fetch_posts_by_hashtag(hashtag, country_filter=country)
+            posts = fetch_posts_by_hashtag(hashtag)
         except Exception as e:
             print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
             continue
