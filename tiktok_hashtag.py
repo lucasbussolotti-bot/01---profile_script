@@ -73,10 +73,12 @@ def read_hashtags(sheets_service):
         return []
 
     col_hashtag = headers.index("hashtag")
-    col_country = headers.index("country")
-    col_marca_kc = headers.index("marca_kc")
-    col_competidor = headers.index("competidor")
-    col_pais = headers.index("pais")
+
+    # FIX 3: validação segura das colunas opcionais antes de usar como índice
+    col_country    = headers.index("country")    if "country"    in headers else None
+    col_marca_kc   = headers.index("marca_kc")   if "marca_kc"   in headers else None
+    col_competidor = headers.index("competidor") if "competidor" in headers else None
+    col_pais       = headers.index("pais")       if "pais"       in headers else None
 
     if col_country is None:
         print("  Aviso: coluna 'Country' não encontrada. Sem filtro de país.")
@@ -87,16 +89,16 @@ def read_hashtags(sheets_service):
     for row in rows[1:]:
         if len(row) <= col_hashtag:
             continue
-            
+
         tag = row[col_hashtag].strip().lstrip("#")
-        
+
         if not tag:
             continue
 
-        country = row[col_country].strip().upper() if len(row) > col_country else ""
-        marca_kc = row[col_marca_kc].strip() if len(row) > col_marca_kc else ""
-        competidor = row[col_competidor].strip() if len(row) > col_competidor else ""
-        pais = row[col_pais].strip() if len(row) > col_pais else ""
+        country    = (row[col_country].strip().upper()  if col_country    is not None and len(row) > col_country    else "")
+        marca_kc   = (row[col_marca_kc].strip()         if col_marca_kc   is not None and len(row) > col_marca_kc   else "")
+        competidor = (row[col_competidor].strip()        if col_competidor is not None and len(row) > col_competidor else "")
+        pais       = (row[col_pais].strip()              if col_pais       is not None and len(row) > col_pais       else "")
 
         key = (tag.lower(), country, marca_kc, competidor, pais)
 
@@ -113,8 +115,8 @@ def read_hashtags(sheets_service):
 
     print(f"  {len(entries)} entrada(s) única(s) encontrada(s):")
     for e in entries:
-        pais = e['country'] if e['country'] else "todos os países"
-        print(f"    #{e['hashtag']} → {pais}")
+        pais_label = e['country'] if e['country'] else "todos os países"
+        print(f"    #{e['hashtag']} → {pais_label}")
 
     return entries
 
@@ -203,14 +205,14 @@ def save_posts_to_sheets(sheets_service, rows_to_add):
 
     if not existing_rows:
         header = [[
-        "hashtag",
-        "share_url",
-        "country",
-        "marca_kc",
-        "competidor",
-        "pais",
-        "region",
-        "run_datetime"
+            "hashtag",
+            "share_url",
+            "country",
+            "marca_kc",
+            "competidor",
+            "pais",
+            "region",
+            "run_datetime"
         ]]
         values = header + rows_to_add
         sheets_service.spreadsheets().values().update(
@@ -262,7 +264,7 @@ def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pa
     duration = detail.get("video", {}).get("duration", "") or detail.get("duration", "")
 
     return [
-        share_url, hashtag, country, marca_kc, competidor, paid, run_datetime, 
+        share_url, hashtag, country, marca_kc, competidor, pais, run_datetime,  # FIX 1: 'pais' em vez de 'paid'
         detail.get("aweme_id", ""),
         detail.get("desc", ""),
         create_time,
@@ -406,7 +408,8 @@ def main():
     print(f"[ETAPA 2] Buscando posts por hashtag...")
     print(f"{'=' * 60}")
 
-        existing_urls = get_existing_urls_posts(sheets_service)
+    # FIX 2: indentação corrigida — fora do for, no nível correto
+    existing_urls = get_existing_urls_posts(sheets_service)
     run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
 
     new_post_rows = []
@@ -416,11 +419,11 @@ def main():
 
     for entry in entries:
 
-        hashtag = entry["hashtag"]
-        country = entry["country"]
-        marca_kc = entry["marca_kc"]
+        hashtag    = entry["hashtag"]
+        country    = entry["country"]
+        marca_kc   = entry["marca_kc"]
         competidor = entry["competidor"]
-        pais = entry["pais"]
+        pais       = entry["pais"]
 
         print(
             f"\n  HASHTAG: #{hashtag}" +
@@ -434,12 +437,10 @@ def main():
             print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
             continue
 
-
         for post in posts:
 
             share_url = post["share_url"]
-            region = post["region"]
-
+            region    = post["region"]
 
             all_posts.append({
                 "share_url": share_url,
@@ -450,10 +451,8 @@ def main():
                 "pais": pais
             })
 
-
             if share_url in existing_urls:
                 continue
-
 
             new_post_rows.append([
                 hashtag,
@@ -467,7 +466,6 @@ def main():
             ])
 
             existing_urls.add(share_url)
-
 
         print(
             f"    Novos posts para #{hashtag}: "
@@ -492,12 +490,12 @@ def main():
     errors          = 0
 
     for i, post in enumerate(all_posts, start=1):
-        share_url = post["share_url"]
-        hashtag   = post["hashtag"]
-        country   = post["country"]
-        marca_kc = post["marca_kc"]
+        share_url  = post["share_url"]
+        hashtag    = post["hashtag"]
+        country    = post["country"]
+        marca_kc   = post["marca_kc"]
         competidor = post["competidor"]
-        pais = post["pais"]
+        pais       = post["pais"]
 
         if share_url in processed_urls:
             print(f"  [{i}/{len(all_posts)}] Já processado, pulando.")
@@ -529,9 +527,9 @@ def main():
 
     print(f"\n{'=' * 60}")
     print(f"PIPELINE FINALIZADO")
-    print(f"  Posts novos salvos em Hashtag_posts:        {len(new_post_rows)}")
+    print(f"  Posts novos salvos em Hashtag_posts:           {len(new_post_rows)}")
     print(f"  Detalhes novos salvos em Hashtag_posts_detail: {len(new_detail_rows)}")
-    print(f"  Erros no video-info:                        {errors}")
+    print(f"  Erros no video-info:                           {errors}")
     print(f"{'=' * 60}")
 
 
