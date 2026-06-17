@@ -98,16 +98,16 @@ def read_hashtags(sheets_service):
 
     key = (tag.lower(), country, marca_kc, competidor, pais)
 
-        if key not in seen:
-            seen.add(key)
+    if key not in seen:
+        seen.add(key)
 
-            entries.append({
-                "hashtag": tag,
-                "country": country,
-                "marca_kc": marca_kc,
-                "competidor": competidor,
-                "pais": pais
-            })
+        entries.append({
+            "hashtag": tag,
+            "country": country,
+            "marca_kc": marca_kc,
+            "competidor": competidor,
+            "pais": pais
+        })
 
     print(f"  {len(entries)} entrada(s) única(s) encontrada(s):")
     for e in entries:
