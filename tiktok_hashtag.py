@@ -72,8 +72,12 @@ def read_hashtags(sheets_service):
         print(f"Coluna 'Hashtag' não encontrada. Colunas disponíveis: {headers}")
         return []
 
-    col_hashtag = headers.index("hashtag")
-    col_country = headers.index("country") if "country" in headers else None
+     col_hashtag = headers.index("hashtag")
+    col_country = headers.index("country")
+
+    col_marca_kc = headers.index("marca_kc")
+    col_competidor = headers.index("competidor")
+    col_pais = headers.index("pais")
 
     if col_country is None:
         print("  Aviso: coluna 'Country' não encontrada. Sem filtro de país.")
@@ -88,14 +92,23 @@ def read_hashtags(sheets_service):
         if not tag:
             continue
 
-        country = ""
-        if col_country is not None and len(row) > col_country:
-            country = row[col_country].strip().upper()
+    country = row[col_country].strip().upper() if len(row) > col_country else ""
+    marca_kc = row[col_marca_kc].strip() if len(row) > col_marca_kc else ""
+    competidor = row[col_competidor].strip() if len(row) > col_competidor else ""
+    pais = row[col_pais].strip() if len(row) > col_pais else ""
 
-        key = (tag.lower(), country)
+    key = (tag.lower(), country, marca_kc, competidor, pais)
+
         if key not in seen:
             seen.add(key)
-            entries.append({"hashtag": tag, "country": country})
+
+            entries.append({
+            "hashtag": tag,
+            "country": country,
+            "marca_kc": marca_kc,
+            "competidor": competidor,
+            "pais": pais
+            })
 
     print(f"  {len(entries)} entrada(s) única(s) encontrada(s):")
     for e in entries:
@@ -188,7 +201,16 @@ def save_posts_to_sheets(sheets_service, rows_to_add):
     existing_rows = existing_data.get("values", [])
 
     if not existing_rows:
-        header = [["hashtag", "share_url", "country", "region", "run_datetime"]]
+        header = [[
+        "hashtag",
+        "share_url",
+        "country",
+        "marca_kc",
+        "competidor",
+        "pais",
+        "region",
+        "run_datetime"
+        ]]
         values = header + rows_to_add
         sheets_service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
@@ -225,7 +247,7 @@ def fetch_video_info(share_url):
     return data.get("data", {}).get("aweme_detail", {})
 
 
-def extract_fields(detail, share_url, hashtag, country, run_datetime):
+def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pais, run_datetime):
     author = detail.get("author", {})
     stats  = detail.get("statistics", {})
     music  = detail.get("music", {})
@@ -273,7 +295,7 @@ def extract_fields(detail, share_url, hashtag, country, run_datetime):
 
 
 DETAIL_HEADER = [
-    "share_url", "hashtag", "country", "run_datetime",
+    "share_url", "hashtag", "country", "marca_kc", "competidor", "pais", "run_datetime",
     "aweme_id", "description", "create_time", "video_region", "duration_seconds",
     "author_username", "author_nickname", "author_uid", "author_sec_uid",
     "author_region", "author_bio", "author_followers", "author_following",
@@ -392,6 +414,9 @@ def main():
     for entry in entries:
         hashtag = entry["hashtag"]
         country = entry["country"]
+        marca_kc = post["marca_kc"]
+        competidor = post["competidor"]
+        pais = post["pais"]
 
         print(f"\n  HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
 
@@ -405,12 +430,28 @@ def main():
             share_url = post["share_url"]
             region    = post["region"]
 
-            all_posts.append({"share_url": share_url, "hashtag": hashtag, "country": country})
+            all_posts.append({
+            "share_url": share_url,
+            "hashtag": hashtag,
+            "country": country,
+            "marca_kc": entry["marca_kc"],
+            "competidor": entry["competidor"],
+            "pais": entry["pais"]
+            })
 
             if share_url in existing_urls:
                 continue
 
-            new_post_rows.append([hashtag, share_url, country, region, run_datetime])
+            new_post_rows.append([
+            hashtag,
+            share_url,
+            country,
+            entry["marca_kc"],
+            entry["competidor"],
+            entry["pais"],
+            region,
+            run_datetime
+            ])
             existing_urls.add(share_url)
 
         print(f"    Novos posts para #{hashtag}: {sum(1 for r in new_post_rows if r[0] == hashtag)}")
@@ -448,7 +489,7 @@ def main():
                 print(f"    Aviso: resposta vazia. Pulando.")
                 continue
 
-            row = extract_fields(detail, share_url, hashtag, country, run_datetime)
+            row = extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pais, run_datetime)
             row = [str(v) if v is not None else "" for v in row]
             new_detail_rows.append(row)
             processed_urls.add(share_url)
