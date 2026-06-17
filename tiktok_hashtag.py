@@ -408,7 +408,7 @@ def main():
     run_datetime  = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
     new_post_rows = []
     # Acumula todos os posts (novos + já existentes) para processar na etapa 3
-    all_posts     = []
+all_posts     = []
 
 for entry in entries:
     hashtag = entry["hashtag"]
