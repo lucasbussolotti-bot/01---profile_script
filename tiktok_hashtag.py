@@ -410,15 +410,15 @@ def main():
     # Acumula todos os posts (novos + já existentes) para processar na etapa 3
 all_posts     = []
 
-for entry in entries:
-    hashtag = entry["hashtag"]
-    country = entry["country"]
+    for entry in entries:
+        hashtag = entry["hashtag"]
+        country = entry["country"]
 
-    marca_kc = entry["marca_kc"]
-    competidor = entry["competidor"]
-    pais = entry["pais"]
+        marca_kc = entry["marca_kc"]
+        competidor = entry["competidor"]
+        pais = entry["pais"]
 
-    print(f"\n  HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
+        print(f"\n  HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
 
     try:
         posts = fetch_posts_by_hashtag(hashtag)
