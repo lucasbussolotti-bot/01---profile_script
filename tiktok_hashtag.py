@@ -102,11 +102,11 @@ def read_hashtags(sheets_service):
             seen.add(key)
 
             entries.append({
-            "hashtag": tag,
-            "country": country,
-            "marca_kc": marca_kc,
-            "competidor": competidor,
-            "pais": pais
+                "hashtag": tag,
+                "country": country,
+                "marca_kc": marca_kc,
+                "competidor": competidor,
+                "pais": pais
             })
 
     print(f"  {len(entries)} entrada(s) única(s) encontrada(s):")
