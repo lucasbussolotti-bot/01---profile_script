@@ -72,35 +72,48 @@ def read_hashtags(sheets_service):
         print(f"Coluna 'Hashtag' não encontrada. Colunas disponíveis: {headers}")
         return []
  
-    col_index = headers.index("hashtag")
+    col_hashtag = headers.index("hashtag")
+    col_country = headers.index("country") if "country" in headers else None
  
-    hashtags = []
-    for row in rows[1:]:
-        if len(row) > col_index:
-            tag = row[col_index].strip().lstrip("#")
-            if tag:
-                hashtags.append(tag)
+    if col_country is None:
+        print("  Aviso: coluna 'Country' não encontrada. Sem filtro de país.")
  
-    # Deduplicação
+    entries = []
     seen = set()
-    unique = []
-    for tag in hashtags:
-        if tag.lower() not in seen:
-            seen.add(tag.lower())
-            unique.append(tag)
  
-    print(f"{len(unique)} hashtag(s) única(s) encontrada(s): {unique}")
-    return unique
+    for row in rows[1:]:
+        if len(row) <= col_hashtag:
+            continue
+        tag = row[col_hashtag].strip().lstrip("#")
+        if not tag:
+            continue
+ 
+        country = ""
+        if col_country is not None and len(row) > col_country:
+            country = row[col_country].strip().upper()
+ 
+        key = (tag.lower(), country)
+        if key not in seen:
+            seen.add(key)
+            entries.append({"hashtag": tag, "country": country})
+ 
+    print(f"{len(entries)} entrada(s) única(s) encontrada(s):")
+    for e in entries:
+        pais = e['country'] if e['country'] else "todos os países"
+        print(f"  #{e['hashtag']} → {pais}")
+ 
+    return entries
  
  
 # ==============================
 # ETAPA 2 — BUSCAR POSTS POR HASHTAG
 # ==============================
  
-def fetch_posts_by_hashtag(hashtag):
+def fetch_posts_by_hashtag(hashtag, country_filter=""):
     """
     Busca posts do TikTok por hashtag via SociaVault.
-    Retorna lista de share_urls.
+    Filtra por author.region se country_filter estiver definido.
+    Retorna lista de dicts com share_url e region.
     """
     url = "https://api.sociavault.com/v1/scrape/tiktok/search/hashtag"
     headers = {"X-API-Key": SOCIA_API_KEY}
@@ -126,26 +139,37 @@ def fetch_posts_by_hashtag(hashtag):
         print(f"  Aviso: estrutura inesperada de aweme_list: {type(aweme_list)}")
         return []
  
-    share_urls = []
+    results = []
+    skipped = 0
+ 
     for item in items:
         share_url = (
             item.get("share_info", {}).get("share_url")
             or item.get("share_url")
             or ""
         )
-        if share_url:
-            share_urls.append(share_url)
+        if not share_url:
+            continue
  
-    print(f"  Posts encontrados para #{hashtag}: {len(share_urls)}")
-    return share_urls
+        region = item.get("author", {}).get("region", "").upper()
+ 
+        # Aplica filtro de país se definido
+        if country_filter and region != country_filter:
+            skipped += 1
+            continue
+ 
+        results.append({"share_url": share_url, "region": region})
+ 
+    print(f"  Posts encontrados: {len(results)}" + (f" | Filtrados por país: {skipped}" if skipped else ""))
+    return results
  
  
 # ==============================
 # ETAPA 3 — SALVAR NA PLANILHA
 # ==============================
  
-def get_existing_urls(sheets_service):
-    """Retorna set de URLs já salvas na aba Hastag_posts."""
+def get_existing_keys(sheets_service):
+    """Retorna set de share_urls já salvas na aba Hashtag_posts."""
     try:
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
@@ -162,15 +186,15 @@ def get_existing_urls(sheets_service):
         for row in rows[1:]:
             if len(row) > url_col and row[url_col].strip():
                 existing.add(row[url_col].strip())
-        print(f"  URLs já salvas na planilha: {len(existing)}")
+        print(f"  URLs já salvas: {len(existing)}")
         return existing
     except Exception as e:
-        print(f"  Aviso ao ler Hastag_posts: {e}")
+        print(f"  Aviso ao ler Hashtag_posts: {e}")
         return set()
  
  
 def save_posts_to_sheets(sheets_service, rows_to_add):
-    """Salva as linhas novas na aba Hastag_posts."""
+    """Salva as linhas novas na aba Hashtag_posts."""
     if not rows_to_add:
         print("  Nenhuma linha nova para salvar.")
         return
@@ -184,7 +208,7 @@ def save_posts_to_sheets(sheets_service, rows_to_add):
  
     if not existing_rows:
         # Insere cabeçalho + dados
-        header = [["hashtag", "share_url", "run_datetime"]]
+        header = [["hashtag", "share_url", "country", "region", "run_datetime"]]
         values = header + rows_to_add
         sheets_service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
@@ -192,7 +216,7 @@ def save_posts_to_sheets(sheets_service, rows_to_add):
             valueInputOption="RAW",
             body={"values": values}
         ).execute()
-        print(f"  Hastag_posts: {len(rows_to_add)} linhas inseridas com cabeçalho.")
+        print(f"  Hashtag_posts: {len(rows_to_add)} linhas inseridas com cabeçalho.")
     else:
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
@@ -201,7 +225,7 @@ def save_posts_to_sheets(sheets_service, rows_to_add):
             insertDataOption="INSERT_ROWS",
             body={"values": rows_to_add}
         ).execute()
-        print(f"  Hastag_posts: {len(rows_to_add)} novas linhas adicionadas.")
+        print(f"  Hashtag_posts: {len(rows_to_add)} novas linhas adicionadas.")
  
  
 # ==============================
@@ -234,40 +258,47 @@ def main():
  
     # ETAPA 1 — Ler hashtags
     print(f"\n[ETAPA 1] Lendo hashtags da aba '{SHEET_HASHTAGS}'...")
-    hashtags = read_hashtags(sheets_service)
+    entries = read_hashtags(sheets_service)
  
-    if not hashtags:
+    if not entries:
         print("Nenhuma hashtag para processar. Encerrando.")
         return
  
     # Carrega URLs já salvas para evitar duplicatas
     print(f"\n[DEDUP] Carregando URLs já salvas na aba '{SHEET_POSTS}'...")
-    existing_urls = get_existing_urls(sheets_service)
+    existing_keys = get_existing_keys(sheets_service)
  
     run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
     all_new_rows = []
  
     # ETAPA 2 — Buscar posts por hashtag
-    for hashtag in hashtags:
+    for entry in entries:
+        hashtag = entry["hashtag"]
+        country = entry["country"]
+ 
         print(f"\n{'=' * 60}")
-        print(f"HASHTAG: #{hashtag}")
+        print(f"HASHTAG: #{hashtag}" + (f" | PAÍS: {country}" if country else " | PAÍS: todos"))
         print(f"{'=' * 60}")
  
         try:
-            share_urls = fetch_posts_by_hashtag(hashtag)
+            posts = fetch_posts_by_hashtag(hashtag, country_filter=country)
         except Exception as e:
             print(f"  ERRO ao buscar #{hashtag}: {e}. Pulando.")
             continue
  
         novos = 0
-        for url in share_urls:
-            if url in existing_urls:
-                continue  # já salvo, ignora
-            all_new_rows.append([hashtag, url, run_datetime])
-            existing_urls.add(url)  # atualiza controle local
+        for post in posts:
+            share_url = post["share_url"]
+            region    = post["region"]
+ 
+            if share_url in existing_keys:
+                continue  # URL já salva, ignora independente de hashtag/country
+ 
+            all_new_rows.append([hashtag, share_url, country, region, run_datetime])
+            existing_keys.add(share_url)
             novos += 1
  
-        print(f"  Novos posts para #{hashtag}: {novos}")
+        print(f"  Novos posts salvos para #{hashtag}: {novos}")
         time.sleep(1)  # respeita rate limit da API
  
     # ETAPA 3 — Salvar tudo de uma vez
