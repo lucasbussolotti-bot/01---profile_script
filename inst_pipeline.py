@@ -404,7 +404,7 @@ def fetch_post_info(shortcode):
             try:
                 cursor_obj = json.loads(raw_cursor)
                 cursor = cursor_obj.get("server_cursor", raw_cursor)
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, AttributeError):
                 cursor = raw_cursor
         else:
             break
@@ -528,9 +528,10 @@ Você é um especialista em análise de sentimentos para redes sociais.
 Sua tarefa é classificar comentários em 'promotor', 'neutro' ou 'detrator'.
 
 REGRAS CRÍTICAS:
-1. Não existe "neutro" ou não demonstra nenhum tipo de comentário.
-2. Se o comentário for positivo, elogio ou neutro-positivo (ex: "ok", "gostei", emojis), classifique como 'promotor'.
-3. Se houver qualquer reclamação, dúvida técnica, ironia ou crítica, classifique como 'detrator'.
+1. Se o comentário for claramente positivo, elogio, entusiasmo ou recomendação, classifique como 'promotor'.
+2. Se houver qualquer reclamação, dúvida técnica, ironia ou crítica, classifique como 'detrator'.
+3. Se o comentário for puramente informativo, ambíguo, irrelevante ao produto/marca, ou não expressar opinião clara (ex: apenas marcação de outro usuário, pergunta neutra sem tom negativo, comentário genérico tipo "ok"), classifique como 'neutro'.
+4. Não force um comentário para 'promotor' ou 'detrator' apenas para evitar usar 'neutro' — use 'neutro' sempre que não houver sinal claro de sentimento positivo ou negativo.
 
 Comentários para análise:
 {json.dumps(comentarios, ensure_ascii=False)}
@@ -547,7 +548,7 @@ Comentários para análise:
                         "Id Comentário": {"type": "string"},
                         "sentimento_nps": {
                             "type": "string",
-                            "enum": ["promotor", "detrator"]
+                            "enum": ["promotor", "neutro", "detrator"]
                         },
                         "justificativa": {"type": "string"}
                     },
