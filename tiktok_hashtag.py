@@ -683,6 +683,7 @@ def main():
     run_datetime = now_br.strftime("%Y-%m-%d %H:%M:%S")
 
     new_post_rows = []
+    total_filtered_by_country = 0
 
     # Acumula todos os posts para etapa 3
     all_posts = []
@@ -719,6 +720,7 @@ def main():
             continue
 
         filtered_out = sum(1 for p in posts if p["region"] not in ALLOWED_COUNTRIES)
+        total_filtered_by_country += filtered_out
         if filtered_out:
             print(f"    Posts descartados (fora da América Central/Sul): {filtered_out}")
 
@@ -841,6 +843,7 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"PIPELINE FINALIZADO")
     print(f"  Posts novos salvos em Hashtag_posts:           {len(new_post_rows)}")
+    print(f"  Posts não salvos (fora da América Central/Sul): {total_filtered_by_country}")
     print(f"  Detalhes novos salvos em Hashtag_posts_detail: {len(new_detail_rows)}")
     print(f"  Posts removidos (hashtag fora da description):{len(urls_to_remove)}")
     print(f"  Erros no video-info:                           {errors}")
