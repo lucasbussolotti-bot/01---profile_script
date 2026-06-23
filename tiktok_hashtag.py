@@ -33,6 +33,9 @@ SHEET_DETAIL   = "Hashtag_posts_detail"  # aba de saída final
 
 tz_br = pytz.timezone("America/Sao_Paulo")
 
+# Janela mínima (em dias) entre execuções da mesma hashtag
+MIN_DAYS_BETWEEN_RUNS = 30
+
 
 # ==============================
 # GOOGLE SERVICES
@@ -190,6 +193,54 @@ def get_existing_urls_posts(sheets_service):
     except Exception as e:
         print(f"  Aviso ao ler Hashtag_posts: {e}")
         return set()
+
+
+def get_last_rundate_per_hashtag(sheets_service):
+    """Retorna dict {hashtag_lower: last_run_datetime (datetime tz-aware)} a partir da aba Hashtag_posts."""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{SHEET_POSTS}!A:Z"
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) <= 1:
+            return {}
+
+        headers = [h.strip().lower() for h in rows[0]]
+        if "hashtag" not in headers or "run_datetime" not in headers:
+            print("  Aviso: colunas 'hashtag' ou 'run_datetime' não encontradas em Hashtag_posts.")
+            return {}
+
+        col_hashtag = headers.index("hashtag")
+        col_rundate = headers.index("run_datetime")
+
+        last_dates = {}
+
+        for row in rows[1:]:
+            if len(row) <= max(col_hashtag, col_rundate):
+                continue
+
+            tag = row[col_hashtag].strip().lower()
+            raw_date = row[col_rundate].strip()
+
+            if not tag or not raw_date:
+                continue
+
+            try:
+                parsed = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S")
+                parsed = tz_br.localize(parsed)
+            except Exception:
+                continue
+
+            if tag not in last_dates or parsed > last_dates[tag]:
+                last_dates[tag] = parsed
+
+        print(f"  Última run_datetime carregada para {len(last_dates)} hashtag(s).")
+        return last_dates
+
+    except Exception as e:
+        print(f"  Aviso ao ler última run_datetime de Hashtag_posts: {e}")
+        return {}
 
 
 def save_posts_to_sheets(sheets_service, rows_to_add):
@@ -410,7 +461,9 @@ def main():
 
     # FIX 2: indentação corrigida — fora do for, no nível correto
     existing_urls = get_existing_urls_posts(sheets_service)
-    run_datetime = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
+    last_rundates = get_last_rundate_per_hashtag(sheets_service)
+    now_br = datetime.now(tz_br)
+    run_datetime = now_br.strftime("%Y-%m-%d %H:%M:%S")
 
     new_post_rows = []
 
@@ -429,6 +482,17 @@ def main():
             f"\n  HASHTAG: #{hashtag}" +
             (f" | PAÍS: {country}" if country else " | PAÍS: todos")
         )
+
+        # ── Checagem de janela mínima entre execuções ──────────
+        last_run = last_rundates.get(hashtag.lower())
+        if last_run is not None:
+            days_since_last_run = (now_br - last_run).days
+            if days_since_last_run <= MIN_DAYS_BETWEEN_RUNS:
+                print(
+                    f"    Pulando #{hashtag}: última execução há {days_since_last_run} dia(s) "
+                    f"(<= {MIN_DAYS_BETWEEN_RUNS} dias). Última run: {last_run.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                continue
 
         try:
             posts = fetch_posts_by_hashtag(hashtag)
