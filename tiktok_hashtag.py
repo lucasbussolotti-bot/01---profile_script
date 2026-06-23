@@ -36,6 +36,12 @@ tz_br = pytz.timezone("America/Sao_Paulo")
 # Janela mínima (em dias) entre execuções da mesma hashtag
 MIN_DAYS_BETWEEN_RUNS = 30
 
+# Países da América Central e do Sul (ISO 2) — apenas posts dessas regiões são salvos
+ALLOWED_COUNTRIES = {
+    "BZ", "CR", "SV", "GT", "HN", "NI", "PA",
+    "AR", "BO", "BR", "CL", "CO", "EC", "GY", "PY", "PE", "SR", "UY", "VE",
+}
+
 
 # ==============================
 # GOOGLE SERVICES
@@ -513,10 +519,17 @@ def main():
             print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
             continue
 
+        filtered_out = sum(1 for p in posts if p["region"] not in ALLOWED_COUNTRIES)
+        if filtered_out:
+            print(f"    Posts descartados (fora da América Central/Sul): {filtered_out}")
+
         for post in posts:
 
             share_url = post["share_url"]
             region    = post["region"]
+
+            if region not in ALLOWED_COUNTRIES:
+                continue
 
             all_posts.append({
                 "share_url": share_url,
