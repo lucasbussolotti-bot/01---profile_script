@@ -207,12 +207,16 @@ def get_last_rundate_per_hashtag(sheets_service):
             return {}
 
         headers = [h.strip().lower() for h in rows[0]]
-        if "hashtag" not in headers or "run_datetime" not in headers:
-            print("  Aviso: colunas 'hashtag' ou 'run_datetime' não encontradas em Hashtag_posts.")
-            return {}
 
-        col_hashtag = headers.index("hashtag")
-        col_rundate = headers.index("run_datetime")
+        possible_hashtag_names = ["hashtag", "hash_tag", "hashtags"]
+        possible_rundate_names = ["rundatetime", "run_datetime", "run_date", "rundate", "data_run", "data", "datetime"]
+
+        col_hashtag = next((headers.index(n) for n in possible_hashtag_names if n in headers), None)
+        col_rundate = next((headers.index(n) for n in possible_rundate_names if n in headers), None)
+
+        if col_hashtag is None or col_rundate is None:
+            print(f"  Aviso: colunas 'hashtag' ou 'run_datetime' não encontradas em Hashtag_posts. Colunas disponíveis: {headers}")
+            return {}
 
         last_dates = {}
 
@@ -227,7 +231,15 @@ def get_last_rundate_per_hashtag(sheets_service):
                 continue
 
             try:
-                parsed = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S")
+                parsed = None
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                    try:
+                        parsed = datetime.strptime(raw_date, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if parsed is None:
+                    continue
                 parsed = tz_br.localize(parsed)
             except Exception:
                 continue
