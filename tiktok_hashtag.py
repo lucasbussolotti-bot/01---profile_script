@@ -404,6 +404,111 @@ def get_processed_urls(sheets_service):
         return set()
 
 
+# ==============================
+# ETAPA 4 — PREENCHER DESCRIPTION EM HASHTAG_POSTS
+# ==============================
+
+def column_index_to_letter(idx):
+    """Converte índice de coluna (0-based) para letra do Google Sheets (A, B, ..., Z, AA, ...)."""
+    letter = ""
+    idx += 1
+    while idx > 0:
+        idx, remainder = divmod(idx - 1, 26)
+        letter = chr(65 + remainder) + letter
+    return letter
+
+
+def ensure_description_column(sheets_service):
+    """Garante que a aba Hashtag_posts tenha uma coluna 'description'. Retorna o índice (0-based) da coluna."""
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_POSTS}!1:1"
+    ).execute()
+    header_row = result.get("values", [[]])
+    headers = header_row[0] if header_row else []
+    headers_lower = [h.strip().lower() for h in headers]
+
+    if "description" in headers_lower:
+        return headers_lower.index("description")
+
+    new_col_idx = len(headers)
+    new_col_letter = column_index_to_letter(new_col_idx)
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_POSTS}!{new_col_letter}1",
+        valueInputOption="RAW",
+        body={"values": [["description"]]}
+    ).execute()
+    print(f"  Coluna 'description' criada em Hashtag_posts (coluna {new_col_letter}).")
+    return new_col_idx
+
+
+def fill_descriptions_in_posts(sheets_service, processed_rows):
+    """Preenche a coluna 'description' em Hashtag_posts apenas para os posts
+    processados nesta rodada (sem backfill de posts antigos)."""
+
+    if not processed_rows:
+        print("  Nenhum post processado nesta rodada. Nada para preencher.")
+        return
+
+    # processed_rows: lista de tuplas (share_url, description)
+    desc_by_url = {url: desc for url, desc in processed_rows if url and desc}
+    if not desc_by_url:
+        print("  Nenhuma description disponível nos posts processados.")
+        return
+
+    desc_col_idx = ensure_description_column(sheets_service)
+    desc_col_letter = column_index_to_letter(desc_col_idx)
+
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_POSTS}!A:Z"
+    ).execute()
+    rows = result.get("values", [])
+    if len(rows) <= 1:
+        print("  Hashtag_posts vazia, nada para preencher.")
+        return
+
+    headers = [h.strip().lower() for h in rows[0]]
+    if "share_url" not in headers:
+        print("  Aviso: coluna 'share_url' não encontrada em Hashtag_posts.")
+        return
+    col_url = headers.index("share_url")
+
+    data_updates = []
+    filled = 0
+
+    for i, row in enumerate(rows[1:], start=2):  # linha 2 = primeira linha de dados
+        if len(row) <= col_url:
+            continue
+        url = row[col_url].strip()
+        if not url or url not in desc_by_url:
+            continue
+
+        data_updates.append({
+            "range": f"{SHEET_POSTS}!{desc_col_letter}{i}",
+            "values": [[desc_by_url[url]]]
+        })
+        filled += 1
+
+    if not data_updates:
+        print("  Nenhuma description nova para preencher em Hashtag_posts.")
+        return
+
+    BATCH_SIZE = 500
+    for start in range(0, len(data_updates), BATCH_SIZE):
+        chunk = data_updates[start:start + BATCH_SIZE]
+        sheets_service.spreadsheets().values().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={
+                "valueInputOption": "RAW",
+                "data": chunk
+            }
+        ).execute()
+
+    print(f"  Hashtag_posts: {filled} description(s) preenchida(s) (apenas posts processados nesta rodada).")
+
+
 def save_details_to_sheets(sheets_service, rows_to_add):
     if not rows_to_add:
         print("  Nenhuma linha nova para salvar em Hashtag_posts_detail.")
@@ -613,6 +718,15 @@ def main():
     # Salva detalhes em Hashtag_posts_detail
     sheets_service = get_google_services()
     save_details_to_sheets(sheets_service, new_detail_rows)
+
+    # ── ETAPA 4 — Preencher description em Hashtag_posts (apenas posts processados nesta rodada) ───
+    print(f"\n{'=' * 60}")
+    print(f"[ETAPA 4] Preenchendo description em '{SHEET_POSTS}' (posts desta rodada)...")
+    print(f"{'=' * 60}")
+    # share_url está no índice 0 e description no índice 8 de cada linha (ver DETAIL_HEADER)
+    processed_descriptions = [(row[0], row[8]) for row in new_detail_rows]
+    sheets_service = get_google_services()
+    fill_descriptions_in_posts(sheets_service, processed_descriptions)
 
     print(f"\n{'=' * 60}")
     print(f"PIPELINE FINALIZADO")
