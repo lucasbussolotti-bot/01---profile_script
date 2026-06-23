@@ -3,6 +3,7 @@ import json
 import time
 import requests
 import builtins
+import unicodedata
 
 from datetime import datetime
 from google.oauth2 import service_account
@@ -443,6 +444,99 @@ def ensure_description_column(sheets_service):
     return new_col_idx
 
 
+# ==============================
+# CHECAGEM HASHTAG NA DESCRIPTION
+# ==============================
+
+def normalize_text(text):
+    """Lowercase + remove acentos/diacríticos (NFKD), igual à fórmula do Sheets generalizada."""
+    if not text:
+        return ""
+    text = text.strip().lower()
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+
+
+def hashtag_in_description(hashtag, description):
+    """Retorna True se a hashtag (normalizada) estiver contida na description (normalizada)."""
+    norm_hashtag = normalize_text(hashtag)
+    norm_desc = normalize_text(description)
+    if not norm_hashtag:
+        return False
+    return norm_hashtag in norm_desc
+
+
+def get_sheet_id(sheets_service, sheet_name):
+    """Retorna o sheetId (gid) numérico de uma aba pelo nome."""
+    metadata = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    for sheet in metadata.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == sheet_name:
+            return props.get("sheetId")
+    return None
+
+
+def remove_rows_from_hashtag_posts(sheets_service, share_urls_to_remove):
+    """Remove as linhas da aba Hashtag_posts cujo share_url esteja em share_urls_to_remove."""
+    if not share_urls_to_remove:
+        return
+
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_POSTS}!A:Z"
+    ).execute()
+    rows = result.get("values", [])
+    if len(rows) <= 1:
+        return
+
+    headers = [h.strip().lower() for h in rows[0]]
+    if "share_url" not in headers:
+        print("  Aviso: coluna 'share_url' não encontrada em Hashtag_posts. Não foi possível remover linhas.")
+        return
+    col_url = headers.index("share_url")
+
+    sheet_id = get_sheet_id(sheets_service, SHEET_POSTS)
+    if sheet_id is None:
+        print(f"  Aviso: não foi possível localizar o sheetId de '{SHEET_POSTS}'.")
+        return
+
+    row_indices_to_delete = []
+    for i, row in enumerate(rows[1:], start=2):  # linha 2 = primeira linha de dados (1-indexed no Sheets)
+        if len(row) <= col_url:
+            continue
+        url = row[col_url].strip()
+        if url in share_urls_to_remove:
+            row_indices_to_delete.append(i)
+
+    if not row_indices_to_delete:
+        return
+
+    # Deleta de baixo para cima para não desalinhar os índices das linhas restantes
+    row_indices_to_delete.sort(reverse=True)
+    requests_batch = []
+    for row_num in row_indices_to_delete:
+        requests_batch.append({
+            "deleteDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": row_num - 1,  # 0-based
+                    "endIndex": row_num
+                }
+            }
+        })
+
+    BATCH_SIZE = 500
+    for start in range(0, len(requests_batch), BATCH_SIZE):
+        chunk = requests_batch[start:start + BATCH_SIZE]
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={"requests": chunk}
+        ).execute()
+
+    print(f"  Hashtag_posts: {len(row_indices_to_delete)} linha(s) removida(s) (hashtag não encontrada na description).")
+
+
 def fill_descriptions_in_posts(sheets_service, processed_rows):
     """Preenche a coluna 'description' em Hashtag_posts apenas para os posts
     processados nesta rodada (sem backfill de posts antigos)."""
@@ -681,6 +775,7 @@ def main():
     processed_urls  = get_processed_urls(sheets_service)
     run_datetime    = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
     new_detail_rows = []
+    urls_to_remove  = []  # posts sem a hashtag na description -> remover de Hashtag_posts
     errors          = 0
 
     for i, post in enumerate(all_posts, start=1):
@@ -703,6 +798,13 @@ def main():
                 print(f"    Aviso: resposta vazia. Pulando.")
                 continue
 
+            description = detail.get("desc", "")
+
+            if not hashtag_in_description(hashtag, description):
+                print(f"    Descartado: hashtag '#{hashtag}' não encontrada na description. Removendo de Hashtag_posts.")
+                urls_to_remove.append(share_url)
+                continue
+
             row = extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pais, run_datetime)
             row = [str(v) if v is not None else "" for v in row]
             new_detail_rows.append(row)
@@ -719,6 +821,14 @@ def main():
     sheets_service = get_google_services()
     save_details_to_sheets(sheets_service, new_detail_rows)
 
+    # ── Remove de Hashtag_posts os posts cuja hashtag não apareceu na description ──
+    if urls_to_remove:
+        print(f"\n{'=' * 60}")
+        print(f"Removendo {len(urls_to_remove)} post(s) de '{SHEET_POSTS}' (hashtag não encontrada na description)...")
+        print(f"{'=' * 60}")
+        sheets_service = get_google_services()
+        remove_rows_from_hashtag_posts(sheets_service, set(urls_to_remove))
+
     # ── ETAPA 4 — Preencher description em Hashtag_posts (apenas posts processados nesta rodada) ───
     print(f"\n{'=' * 60}")
     print(f"[ETAPA 4] Preenchendo description em '{SHEET_POSTS}' (posts desta rodada)...")
@@ -732,6 +842,7 @@ def main():
     print(f"PIPELINE FINALIZADO")
     print(f"  Posts novos salvos em Hashtag_posts:           {len(new_post_rows)}")
     print(f"  Detalhes novos salvos em Hashtag_posts_detail: {len(new_detail_rows)}")
+    print(f"  Posts removidos (hashtag fora da description):{len(urls_to_remove)}")
     print(f"  Erros no video-info:                           {errors}")
     print(f"{'=' * 60}")
 
