@@ -390,7 +390,13 @@ def fetch_post_info(shortcode):
 
         page_comments = normalize_comments(comment_nodes, page)
         all_comments.extend(page_comments)
-        print(f"    Página {page}: {len(page_comments)} comentários")
+
+        # Paginação
+        page_info = comment_data.get("page_info", {})
+        has_next = page_info.get("has_next_page", False)
+        raw_cursor = page_info.get("end_cursor")
+
+        print(f"    Página {page}: {len(page_comments)} comentários | has_next_page={has_next} | end_cursor={raw_cursor}")
 
         # Para de paginar se já atingiu o limite de comentários
         if len(all_comments) >= COMMENTS_LIMIT:
@@ -398,15 +404,11 @@ def fetch_post_info(shortcode):
             all_comments = all_comments[:COMMENTS_LIMIT]
             break
 
-        # Paginação
-        page_info = comment_data.get("page_info", {})
-        has_next = page_info.get("has_next_page", False)
-
         if not has_next:
+            print(f"    has_next_page=False retornado pela API, encerrando paginação.")
             break
 
         # O end_cursor pode ser uma string JSON ou string simples
-        raw_cursor = page_info.get("end_cursor")
         if raw_cursor:
             try:
                 cursor_obj = json.loads(raw_cursor)
