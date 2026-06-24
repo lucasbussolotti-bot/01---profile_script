@@ -334,6 +334,7 @@ def fetch_post_info(shortcode):
         params = {"url": post_url_param}
         if cursor:
             params["cursor"] = cursor
+            print(f"    [DEBUG] Enviando cursor na página {page}: {cursor}")
 
         response = requests.get(url, params=params, headers=headers, timeout=API_TIMEOUT)
 
@@ -408,13 +409,12 @@ def fetch_post_info(shortcode):
             print(f"    has_next_page=False retornado pela API, encerrando paginação.")
             break
 
-        # O end_cursor pode ser uma string JSON ou string simples
+        # O end_cursor pode ser uma string JSON ou string simples.
+        # FIX: a API exige o objeto completo (server_cursor + is_server_cursor_inverse),
+        # não apenas a string do server_cursor isolada — antes isso fazia a API
+        # ignorar o cursor e devolver a primeira página de novo (loop de duplicados).
         if raw_cursor:
-            try:
-                cursor_obj = json.loads(raw_cursor)
-                cursor = cursor_obj.get("server_cursor", raw_cursor)
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                cursor = raw_cursor
+            cursor = raw_cursor
         else:
             break
 
