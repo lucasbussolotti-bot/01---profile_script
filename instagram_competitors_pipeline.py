@@ -32,7 +32,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 POSTS_LIMIT = 10
 COMMENTS_LIMIT = 100
 BATCH_SIZE = 20
-POST_EXPIRY_DAYS = 14
+PROFILE_REFRESH_DAYS = 30
 
 # Spreadsheet IDs (planilha única unificada)
 SPREADSHEET_PROFILES_ID = "1sMcUNkDVtuhL51f2BVVwuSim45d8rfiug5Sb6Hcb-Qk"
@@ -108,6 +108,55 @@ def read_profiles(sheets_service):
     print(f"Após deduplicação: {len(profiles_unique)} perfil(is) único(s): {[p['profile'] for p in profiles_unique]}")
     return profiles_unique
 
+
+def get_last_run_by_profile(sheets_service):
+    """Retorna dict {username: last_run_datetime (datetime)} com o último run_datetime
+    salvo para cada perfil na aba data_profile."""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
+            range=f"{SHEET_DATA_PROFILE}!A:Z"
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) <= 1:
+            return {}
+        headers = rows[0]
+        if "username" not in headers or "run_datetime" not in headers:
+            return {}
+        username_col = headers.index("username")
+        run_col = headers.index("run_datetime")
+
+        last_run = {}
+        for row in rows[1:]:
+            if len(row) > max(username_col, run_col):
+                username = row[username_col].strip()
+                run_str = row[run_col].strip()
+                if not username or not run_str:
+                    continue
+                try:
+                    run_dt = tz_br.localize(datetime.strptime(run_str, "%Y-%m-%d %H:%M:%S"))
+                except Exception:
+                    continue
+                if username not in last_run or run_dt > last_run[username]:
+                    last_run[username] = run_dt
+        return last_run
+    except Exception as e:
+        print(f"  Aviso ao ler último run por perfil: {e}")
+        return {}
+
+
+def should_skip_profile(handle, last_run_by_profile):
+    """Retorna True se o perfil já foi processado há menos de PROFILE_REFRESH_DAYS dias."""
+    last_run = last_run_by_profile.get(handle)
+    if not last_run:
+        return False
+    dias_desde_ultimo_run = (datetime.now(tz_br) - last_run).days
+    if dias_desde_ultimo_run < PROFILE_REFRESH_DAYS:
+        print(f"  Perfil @{handle} processado há {dias_desde_ultimo_run} dia(s) (< {PROFILE_REFRESH_DAYS}), pulando.")
+        return True
+    return False
+
+
 def fetch_profile(handle):
     url = "https://api.sociavault.com/v1/scrape/instagram/profile"
     headers = {"X-API-Key": SOCIA_API_KEY}
@@ -177,7 +226,7 @@ def fetch_posts(handle):
         username_shared = item.get("user", {}).get("username", top_username)
         code = item.get("code")
         taken_at_raw = item.get("taken_at")
-        taken_at = datetime.fromtimestamp(taken_at_raw, tz=tz_br).strftime("%Y-%m-%d %H:%M:%S") if taken_at_raw else ""
+        create_time = datetime.fromtimestamp(taken_at_raw, tz=tz_br).strftime("%Y-%m-%d %H:%M:%S") if taken_at_raw else ""
         post_url = item.get("url")
 
         if not post_url and code:
@@ -205,7 +254,6 @@ def fetch_posts(handle):
             first_frame_url = additional_candidates.get("first_frame", {}).get("url")
 
         rows.append({
-            "run_datetime": run_datetime,
             "Plataform": "Instagram",
             "username": handle,
             "username_shared": username_shared,
@@ -213,7 +261,7 @@ def fetch_posts(handle):
             "following_count": profile_data.get("following_count"),
             "total_posts_count": profile_data.get("total_posts_count"),
             "code": code,
-            "taken_at": taken_at,
+            "create_time": create_time,
             "url": post_url,
             "media_type": media_type,
             "comment_count": comment_count,
@@ -222,41 +270,13 @@ def fetch_posts(handle):
             "preview_image_url": preview_image_url,
             "first_frame_url": first_frame_url,
             "post_caption": "",  # será preenchido na etapa 3
-            "first_extracted_at": run_datetime
+            "run_datetime": run_datetime
         })
 
     df = pd.DataFrame(rows)
     df = df.fillna("")
     print(f"  Posts extraídos: {len(df)}")
     return df
-
-
-def get_saved_post_codes(sheets_service):
-    """Retorna dict {code: first_extracted_at} já salvos no data_profile."""
-    try:
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_DATA_PROFILE_ID,
-            range=f"{SHEET_DATA_PROFILE}!A:Z"
-        ).execute()
-        rows = result.get("values", [])
-        if len(rows) <= 1:
-            return {}
-        headers = rows[0]
-        if "code" not in headers:
-            return {}
-        code_col = headers.index("code")
-        extracted_col = headers.index("first_extracted_at") if "first_extracted_at" in headers else None
-        saved = {}
-        for row in rows[1:]:
-            if len(row) > code_col:
-                code = row[code_col].strip()
-                first_extracted = row[extracted_col].strip() if extracted_col and len(row) > extracted_col else ""
-                if code and code not in saved:
-                    saved[code] = first_extracted
-        return saved
-    except Exception as e:
-        print(f"  Aviso ao ler data_profile: {e}")
-        return {}
 
 
 def save_posts_to_sheets(sheets_service, df):
@@ -293,19 +313,6 @@ def save_posts_to_sheets(sheets_service, df):
 # ==============================
 # ETAPA 3 — POST INFO (comentários + descrição)
 # ==============================
-
-def is_post_expired(first_extracted_at_str):
-    """Retorna True se o post foi extraído há mais de 14 dias."""
-    if not first_extracted_at_str:
-        return False
-    try:
-        first_extracted = datetime.strptime(first_extracted_at_str, "%Y-%m-%d %H:%M:%S")
-        first_extracted = tz_br.localize(first_extracted)
-        hoje = datetime.now(tz_br)
-        return (hoje - first_extracted).days > POST_EXPIRY_DAYS
-    except Exception:
-        return False
-
 
 def fetch_post_info(shortcode):
     """
@@ -684,12 +691,16 @@ def main():
         print("Nenhum perfil para processar. Encerrando.")
         return
 
-    # Carrega first_extracted_at de cada code
-    saved_post_codes = get_saved_post_codes(sheets_service)
-    print(f"Codes já conhecidos no data_profile: {len(saved_post_codes)}")
+    # Carrega último run_datetime conhecido por perfil (controle de 30 dias)
+    last_run_by_profile = get_last_run_by_profile(sheets_service)
+    print(f"Perfis com histórico de execução: {len(last_run_by_profile)}")
 
     for profile_entry in profiles:
         handle = profile_entry["profile"]
+
+        if should_skip_profile(handle, last_run_by_profile):
+            continue
+
         print(f"\n{'=' * 60}")
         print(f"PERFIL: {handle}")
         print(f"{'=' * 60}")
@@ -709,8 +720,6 @@ def main():
         # ETAPA 3 — Para cada post: busca post-info (caption + comentários)
         print(f"\n[ETAPA 3] Processando post-info dos posts de @{handle}...")
 
-        hoje_str = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
-
         for idx, post_row in df_posts.iterrows():
             post_url = post_row.get("url", "")
             post_code = post_row.get("code", "")
@@ -721,12 +730,6 @@ def main():
 
             if not post_url:
                 post_url = f"https://www.instagram.com/p/{post_code}/"
-
-            # Verifica expiração (14 dias desde first_extracted_at)
-            first_extracted_at = saved_post_codes.get(post_code, "")
-            if is_post_expired(first_extracted_at):
-                print(f"  Post expirado (>14 dias): {post_url}. Pulando.")
-                continue
 
             print(f"\n  Post: {post_url}")
 
@@ -763,11 +766,6 @@ def main():
 
         # Salva posts (com captions preenchidas) no data_profile
         save_posts_to_sheets(sheets_service, df_posts)
-
-        # Atualiza dict local para controle de expiração
-        for code in df_posts["code"].tolist():
-            if code and code not in saved_post_codes:
-                saved_post_codes[code] = hoje_str
 
     print(f"\n{'=' * 60}")
     print("PIPELINE FINALIZADO COM SUCESSO")
