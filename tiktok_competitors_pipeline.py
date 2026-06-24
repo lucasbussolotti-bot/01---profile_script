@@ -17,17 +17,15 @@ GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS", "")
 
 SHEET_TIKTOK_PROFILE_ID   = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
-SHEET_TT_DATA_PROFILE_ID  = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
 SHEET_TT_DATA_POST_ID     = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
 SHEET_TT_DATA_COMMENTS_ID = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
 
 TAB_TIKTOK_PROFILE   = "tt_competitors_data"
-TAB_TT_DATA_PROFILE  = "tt_competitors_data_profile"
 TAB_TT_DATA_POST     = "tt_competitors_data_post"
 TAB_TT_DATA_COMMENTS = "tt_competitors_data_comments"
 
 API_BASE         = "https://api.sociavault.com/v1/scrape/tiktok"
-MAX_POSTS        = 5
+MAX_POSTS        = 10
 POST_MAX_DAYS    = 14
 GEMINI_BATCH     = 20
 GEMINI_MAX_RETRY = 2
@@ -87,6 +85,18 @@ def ensure_header(service, spreadsheet_id, tab, columns):
             body={"values": [columns]}
         ).execute()
 
+
+def epoch_to_datetime_str(epoch_value):
+    """Converte um epoch (segundos) para string 'YYYY-MM-DD HH:MM:SS' em UTC.
+    Retorna string vazia se o valor não for válido."""
+    try:
+        epoch_int = int(epoch_value)
+        if epoch_int <= 0:
+            return ""
+        return datetime.fromtimestamp(epoch_int, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError, OverflowError):
+        return ""
+
 # ==============================
 # SOCIAVAULT HELPERS
 # ==============================
@@ -116,7 +126,9 @@ def extrair_retry_seconds(error_str):
 def classify_comments_batch(client, comments_text):
     prompt = (
         "Você é um analista de redes sociais. Classifique cada comentário abaixo como "
-        "'promotor' (positivo, elogio, apoio) ou 'detrator' (negativo, crítica, reclamação).\n"
+        "'promotor' (positivo, elogio, apoio), 'detrator' (negativo, crítica, reclamação) "
+        "ou 'neutro' (sem opinião clara, pergunta genérica, comentário factual, "
+        "irrelevante ao conteúdo, ou sem sentimento definido).\n"
         "Para cada comentário, retorne um JSON com os campos 'classification' e 'classification_reason'.\n"
         "Retorne APENAS uma lista JSON, sem markdown, sem texto extra.\n\n"
         "Comentários:\n"
@@ -179,59 +191,13 @@ def ler_perfis(service):
     return perfis
 
 # ==============================
-# ETAPA 2.0 — DADOS DO PERFIL
-# ==============================
-
-PROFILE_COLS = [
-    "user_id", "username", "nickname", "verified",
-    "followers", "following", "likes", "videos",
-    "bio", "language", "is_organization", "run_datetime"
-]
-
-def processar_perfil(service, username):
-    print(f"  [2.0] Buscando dados do perfil: {username}", flush=True)
-    try:
-        data = sv_get("profile", {"handle": username})
-    except Exception as e:
-        print(f"    Erro ao buscar perfil {username}: {e}", flush=True)
-        return None
-
-    ensure_header(service, SHEET_TT_DATA_PROFILE_ID, TAB_TT_DATA_PROFILE, PROFILE_COLS)
-
-    inner = data.get("data", data)
-    user  = inner.get("user", {})
-    stats = inner.get("statsV2", inner.get("stats", {}))
-
-    row = {
-        "user_id":         str(user.get("id", "")),
-        "username":        user.get("uniqueId", username),
-        "nickname":        user.get("nickname", ""),
-        "verified":        user.get("verified", ""),
-        "followers":       stats.get("followerCount", ""),
-        "following":       stats.get("followingCount", ""),
-        "likes":           stats.get("heartCount", ""),
-        "videos":          stats.get("videoCount", ""),
-        "bio":             user.get("signature", ""),
-        "language":        user.get("language", ""),
-        "is_organization": user.get("isOrganization", ""),
-        "run_datetime":    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    }
-    df_row = pd.DataFrame([row])[PROFILE_COLS]
-    append_to_sheet(service, SHEET_TT_DATA_PROFILE_ID, TAB_TT_DATA_PROFILE, df_row)
-
-    real_handle = user.get("uniqueId", username)
-    print(f"    Perfil {username} salvo no tt_competitors_data_profile. Handle real: {real_handle}", flush=True)
-
-    return data, real_handle
-
-# ==============================
 # ETAPA 2.1 — VÍDEOS / POSTS
 # ==============================
 
 POST_COLS = [
     "video_id", "description", "create_time", "author",
     "username", "followers", "likes", "comments",
-    "views", "shares", "first_extracted_at", "video_url",
+    "views", "shares", "first_extracted_at", "run_datetime", "video_url",
     "digg_count", "comment_count", "share_count", "play_count",
     "collect_count", "download_count", "whatsapp_share_count",
     "forward_count", "repost_count"
@@ -299,7 +265,7 @@ def processar_videos(service, username):
         else set()
     )
 
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    run_datetime_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     novos = []
 
     for v in videos:
@@ -323,13 +289,17 @@ def processar_videos(service, username):
 
         video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
 
+        # create_time vem como epoch (segundos) e representa a data de PUBLICAÇÃO do vídeo
+        raw_create_time = v.get("create_time", v.get("createTime", ""))
+        published_at_str = epoch_to_datetime_str(raw_create_time)
+
         print(f"      Buscando video-info para {video_id}...", flush=True)
         video_info = buscar_video_info(video_url, video_id)
 
         row = {
             "video_id":             video_id,
             "description":          v.get("desc", v.get("description", "")),
-            "create_time":          v.get("create_time", v.get("createTime", "")),
+            "create_time":          raw_create_time,
             "author":               author_name,
             "username":             username,
             "followers":            follower_count,
@@ -337,7 +307,8 @@ def processar_videos(service, username):
             "comments":             comments,
             "views":                views,
             "shares":               shares,
-            "first_extracted_at":   now_str,
+            "first_extracted_at":   published_at_str,   # data de publicação do post
+            "run_datetime":         run_datetime_str,   # data/hora em que o pipeline rodou
             "video_url":            video_url,
             "digg_count":           video_info["digg_count"],
             "comment_count":        video_info["comment_count"],
@@ -506,23 +477,13 @@ def main():
         print(f"{'='*40}", flush=True)
 
         try:
-            result = processar_perfil(service, username)
-            if result is None:
-                print(f"  Perfil {username} não retornou dados. Pulando.", flush=True)
-                continue
-            _, real_handle = result
+            posts = processar_videos(service, username)
         except Exception as e:
-            print(f"  Erro em 2.0 para {username}: {e}. Pulando.", flush=True)
-            continue
-
-        try:
-            posts = processar_videos(service, real_handle)
-        except Exception as e:
-            print(f"  Erro em 2.1 para {real_handle}: {e}. Pulando.", flush=True)
+            print(f"  Erro em 2.1 para {username}: {e}. Pulando.", flush=True)
             continue
 
         if not posts:
-            print(f"  Sem posts para processar comentários de {real_handle}.", flush=True)
+            print(f"  Sem posts para processar comentários de {username}.", flush=True)
             continue
 
         for post in posts:
