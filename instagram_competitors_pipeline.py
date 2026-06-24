@@ -314,23 +314,59 @@ def save_posts_to_sheets(sheets_service, df):
 # ETAPA 3 — POST INFO (comentários + descrição)
 # ==============================
 
-def fetch_post_info(shortcode):
+def fetch_caption(shortcode):
     """
-    Chama o endpoint /post-info e retorna:
-    - caption (str): texto de descrição do post
-    - comments (list): todos os comentários paginados
+    Chama o endpoint /post-info apenas para extrair a legenda do post.
+    Não usa esse endpoint para paginar comentários — o cursor que ele retorna
+    (server_cursor / is_server_cursor_inverse) é a estrutura crua do GraphQL
+    do Instagram e não funciona para buscar páginas seguintes neste endpoint.
     """
     url = "https://api.sociavault.com/v1/scrape/instagram/post-info"
     headers = {"X-API-Key": SOCIA_API_KEY}
+    post_url_param = f"https://www.instagram.com/p/{shortcode}/"
+    params = {"url": post_url_param}
+
+    response = requests.get(url, params=params, headers=headers, timeout=API_TIMEOUT)
+    response.raise_for_status()
+    data = response.json()
+
+    media = (
+        data.get("data", {})
+            .get("data", {})
+            .get("xdt_shortcode_media", {})
+    )
+
+    caption_edges = (
+        media.get("edge_media_to_caption", {})
+             .get("edges", {})
+    )
+    if isinstance(caption_edges, dict):
+        first = caption_edges.get("0", {})
+    elif isinstance(caption_edges, list) and len(caption_edges) > 0:
+        first = caption_edges[0]
+    else:
+        first = {}
+
+    return first.get("node", {}).get("text", "")
+
+
+def fetch_comments(shortcode):
+    """
+    Chama o endpoint dedicado /v1/scrape/instagram/comments, que é o endpoint
+    feito pela SociaVault especificamente para paginar comentários (documentação:
+    "Use the cursor parameter from the response to get the next page of comments").
+    Retorna até COMMENTS_LIMIT comentários.
+    """
+    url = "https://api.sociavault.com/v1/scrape/instagram/comments"
+    headers = {"X-API-Key": SOCIA_API_KEY}
+    post_url_param = f"https://www.instagram.com/p/{shortcode}/"
 
     all_comments = []
-    caption = ""
     cursor = None
     page = 1
     seen_ids = set()  # controle de IDs já vistos para detectar páginas duplicadas
 
     while True:
-        post_url_param = f"https://www.instagram.com/p/{shortcode}/"
         params = {"url": post_url_param}
         if cursor:
             params["cursor"] = cursor
@@ -344,46 +380,22 @@ def fetch_post_info(shortcode):
             break
 
         response.raise_for_status()
-        data = response.json()
+        data = response.json().get("data", {})
 
-        media = (
-            data.get("data", {})
-                .get("data", {})
-                .get("xdt_shortcode_media", {})
-        )
-
-        # Extrai caption apenas na primeira página
-        if page == 1:
-            caption_edges = (
-                media.get("edge_media_to_caption", {})
-                     .get("edges", {})
-            )
-            if isinstance(caption_edges, dict):
-                first = caption_edges.get("0", {})
-            elif isinstance(caption_edges, list) and len(caption_edges) > 0:
-                first = caption_edges[0]
-            else:
-                first = {}
-            caption = first.get("node", {}).get("text", "")
-
-        # Extrai comentários
-        comment_data = media.get("edge_media_to_parent_comment", {})
-        edges = comment_data.get("edges", {})
-
-        if isinstance(edges, dict):
-            comment_nodes = [v.get("node", {}) for v in edges.values()]
-        elif isinstance(edges, list):
-            comment_nodes = [item.get("node", {}) for item in edges]
+        comments_raw = data.get("comments", {})
+        if isinstance(comments_raw, dict):
+            comment_nodes = list(comments_raw.values())
+        elif isinstance(comments_raw, list):
+            comment_nodes = comments_raw
         else:
             comment_nodes = []
 
-        # FIX: página sem comentários = API bugada com has_next_page: True infinito
         if not comment_nodes:
             print(f"    Página {page}: sem comentários, encerrando paginação.")
             break
 
         # Detecta página duplicada: se todos os IDs já foram vistos, para imediatamente
-        page_ids = {str(node.get("id", "")) for node in comment_nodes if node.get("id")}
+        page_ids = {str(c.get("id", "")) for c in comment_nodes if c.get("id")}
         if page_ids and page_ids.issubset(seen_ids):
             print(f"    Página {page}: todos os IDs já vistos (API retornou página duplicada), encerrando paginação.")
             break
@@ -392,12 +404,8 @@ def fetch_post_info(shortcode):
         page_comments = normalize_comments(comment_nodes, page)
         all_comments.extend(page_comments)
 
-        # Paginação
-        page_info = comment_data.get("page_info", {})
-        has_next = page_info.get("has_next_page", False)
-        raw_cursor = page_info.get("end_cursor")
-
-        print(f"    Página {page}: {len(page_comments)} comentários | has_next_page={has_next} | end_cursor={raw_cursor}")
+        next_cursor = data.get("cursor")
+        print(f"    Página {page}: {len(page_comments)} comentários | next_cursor={'sim' if next_cursor else 'não'}")
 
         # Para de paginar se já atingiu o limite de comentários
         if len(all_comments) >= COMMENTS_LIMIT:
@@ -405,23 +413,15 @@ def fetch_post_info(shortcode):
             all_comments = all_comments[:COMMENTS_LIMIT]
             break
 
-        if not has_next:
-            print(f"    has_next_page=False retornado pela API, encerrando paginação.")
+        if not next_cursor:
+            print(f"    Sem cursor na resposta, encerrando paginação (fim dos comentários).")
             break
 
-        # O end_cursor pode ser uma string JSON ou string simples.
-        # FIX: a API exige o objeto completo (server_cursor + is_server_cursor_inverse),
-        # não apenas a string do server_cursor isolada — antes isso fazia a API
-        # ignorar o cursor e devolver a primeira página de novo (loop de duplicados).
-        if raw_cursor:
-            cursor = raw_cursor
-        else:
-            break
-
+        cursor = next_cursor
         page += 1
         time.sleep(1)
 
-    return caption, all_comments
+    return all_comments
 
 
 def normalize_comments(comment_nodes, page):
@@ -486,21 +486,24 @@ def comments_to_dataframe(comments, post_url, perfil, saved_ids):
             skipped += 1
             continue
 
-        user = item.get("owner", {})
+        # Estrutura do endpoint /v1/scrape/instagram/comments: dados do autor
+        # vêm em "user" (não mais em "owner"), e não há contagem de likes/replies
+        # do comentário neste endpoint.
+        user = item.get("user", {})
         rows.append({
             "post_url": post_url,
             "perfil": perfil,
             "Id Comentário": item.get("_custom_comment_id"),
             "id": comment_id,
             "text": item.get("text"),
-            "comment_like_count": item.get("edge_liked_by", {}).get("count"),
-            "child_comment_count": item.get("edge_threaded_comments", {}).get("count", 0),
+            "comment_like_count": "",
+            "child_comment_count": "",
             "created_at": item.get("created_at"),
             "user": json.dumps(user, ensure_ascii=False),
             "username": user.get("username"),
             "id_user": user.get("id"),
-            "is_unpublished": item.get("is_restricted_pending"),
-            "pk": user.get("id"),
+            "is_unpublished": user.get("is_unpublished"),
+            "pk": user.get("pk"),
             "is_verified": user.get("is_verified")
         })
 
@@ -736,8 +739,9 @@ def main():
             print(f"\n  Post: {post_url}")
 
             try:
-                # Busca caption e comentários via post-info
-                caption, all_comments = fetch_post_info(post_code)
+                # Busca legenda (post-info) e comentários (endpoint dedicado de paginação)
+                caption = fetch_caption(post_code)
+                all_comments = fetch_comments(post_code)
 
                 # Atualiza caption no dataframe de posts
                 df_posts.at[idx, "post_caption"] = caption
