@@ -4,7 +4,7 @@ import json
 import time
 import requests
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from google import genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -30,6 +30,7 @@ POST_MAX_DAYS    = 14
 GEMINI_BATCH     = 20
 GEMINI_MAX_RETRY = 2
 COMMENTS_LIMIT   = 100
+PROFILE_REFRESH_DAYS = 30  # só reprocessa um perfil se já passaram esses dias desde o último run
 
 # ==============================
 # GOOGLE SHEETS HELPERS
@@ -97,6 +98,38 @@ def epoch_to_datetime_str(epoch_value):
     except (ValueError, TypeError, OverflowError):
         return ""
 
+
+def get_last_run_by_profile(service):
+    """Lê a aba de posts e retorna um dicionário {username: último run_datetime (datetime)}."""
+    df = read_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST)
+    last_run = {}
+    if df.empty or "username" not in df.columns or "run_datetime" not in df.columns:
+        return last_run
+
+    for _, row in df.iterrows():
+        username = str(row.get("username", "")).strip()
+        run_str  = str(row.get("run_datetime", "")).strip()
+        if not username or not run_str:
+            continue
+        try:
+            run_dt = datetime.strptime(run_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if username not in last_run or run_dt > last_run[username]:
+            last_run[username] = run_dt
+
+    return last_run
+
+
+def deve_processar_perfil(username, last_run_map):
+    """Retorna True se o perfil nunca foi processado ou se já passaram
+    PROFILE_REFRESH_DAYS dias desde a última execução."""
+    last_run = last_run_map.get(username)
+    if last_run is None:
+        return True
+    elapsed = datetime.now(timezone.utc) - last_run
+    return elapsed >= timedelta(days=PROFILE_REFRESH_DAYS)
+
 # ==============================
 # SOCIAVAULT HELPERS
 # ==============================
@@ -125,13 +158,17 @@ def extrair_retry_seconds(error_str):
 
 def classify_comments_batch(client, comments_text):
     prompt = (
-        "Você é um analista de redes sociais. Classifique cada comentário abaixo como "
-        "'promotor' (positivo, elogio, apoio), 'detrator' (negativo, crítica, reclamação) "
-        "ou 'neutro' (sem opinião clara, pergunta genérica, comentário factual, "
-        "irrelevante ao conteúdo, ou sem sentimento definido).\n"
-        "Para cada comentário, retorne um JSON com os campos 'classification' e 'classification_reason'.\n"
-        "Retorne APENAS uma lista JSON, sem markdown, sem texto extra.\n\n"
-        "Comentários:\n"
+        "Eres un analista de redes sociales. Clasifica cada comentario a continuación como "
+        "'promotor' (positivo, elogio, apoyo), 'detractor' (negativo, crítica, queja) "
+        "o 'neutral' (sin opinión clara, pregunta genérica, comentario factual, "
+        "irrelevante al contenido, o sin sentimiento definido).\n"
+        "IMPORTANTE: usa SIEMPRE el idioma español para el campo 'classification' "
+        "(valores permitidos, exactamente así: 'promotor', 'detractor', 'neutral') "
+        "y también para el campo 'classification_reason'. No uses inglés ni portugués "
+        "en ningún campo, incluso si el comentario original está en otro idioma.\n"
+        "Para cada comentario, devuelve un JSON con los campos 'classification' y 'classification_reason'.\n"
+        "Devuelve SOLO una lista JSON, sin markdown, sin texto adicional.\n\n"
+        "Comentarios:\n"
     )
     for i, text in enumerate(comments_text):
         prompt += f"{i+1}. {text}\n"
@@ -197,7 +234,7 @@ def ler_perfis(service):
 POST_COLS = [
     "video_id", "description", "create_time", "author",
     "username", "followers", "likes", "comments",
-    "views", "shares", "first_extracted_at", "run_datetime", "video_url",
+    "views", "shares", "run_datetime", "video_url",
     "digg_count", "comment_count", "share_count", "play_count",
     "collect_count", "download_count", "whatsapp_share_count",
     "forward_count", "repost_count"
@@ -291,7 +328,7 @@ def processar_videos(service, username):
 
         # create_time vem como epoch (segundos) e representa a data de PUBLICAÇÃO do vídeo
         raw_create_time = v.get("create_time", v.get("createTime", ""))
-        published_at_str = epoch_to_datetime_str(raw_create_time)
+        create_time_str = epoch_to_datetime_str(raw_create_time)
 
         print(f"      Buscando video-info para {video_id}...", flush=True)
         video_info = buscar_video_info(video_url, video_id)
@@ -299,7 +336,7 @@ def processar_videos(service, username):
         row = {
             "video_id":             video_id,
             "description":          v.get("desc", v.get("description", "")),
-            "create_time":          raw_create_time,
+            "create_time":          create_time_str,    # data de publicação do post, já formatada
             "author":               author_name,
             "username":             username,
             "followers":            follower_count,
@@ -307,7 +344,6 @@ def processar_videos(service, username):
             "comments":             comments,
             "views":                views,
             "shares":               shares,
-            "first_extracted_at":   published_at_str,   # data de publicação do post
             "run_datetime":         run_datetime_str,   # data/hora em que o pipeline rodou
             "video_url":            video_url,
             "digg_count":           video_info["digg_count"],
@@ -470,11 +506,19 @@ def main():
     if not perfis:
         return
 
+    print("[INIT] Verificando últimas execuções por perfil...", flush=True)
+    last_run_map = get_last_run_by_profile(service)
+
     for perfil in perfis:
         username = perfil["profile"].lstrip("@")
         print(f"\n{'='*40}", flush=True)
         print(f"PERFIL: @{username}", flush=True)
         print(f"{'='*40}", flush=True)
+
+        if not deve_processar_perfil(username, last_run_map):
+            last_run = last_run_map.get(username)
+            print(f"  Pulando @{username}: último run em {last_run} (< {PROFILE_REFRESH_DAYS} dias).", flush=True)
+            continue
 
         try:
             posts = processar_videos(service, username)
