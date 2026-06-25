@@ -181,7 +181,7 @@ def ler_perfis(service):
 # ==============================
 
 POST_COLS = [
-    "video_url", "hashtag", "country", "marca_kc", "Competidor", "Pais",
+    "type_post", "video_url", "hashtag", "country", "marca_kc", "Competidor", "Pais",
     "run_datetime", "video_id", "description", "create_time",
     "video_region", "author", "username", "followers",
     "play_count", "digg_count", "comment_count", "share_count",
@@ -275,8 +275,9 @@ def processar_videos(service, username, type_val="", country_val=""):
         video_info = buscar_video_info(video_url, video_id)
 
         row = {
+            "type_post":      "Competitors",
             "video_url":      video_url,
-            "hashtag":        type_val,
+            "hashtag":        "",
             "country":        country_val,
             "marca_kc":       "",
             "Competidor":     username,
