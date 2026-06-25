@@ -323,7 +323,6 @@ def fetch_video_info(share_url):
 def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pais, run_datetime):
     author = detail.get("author", {})
     stats  = detail.get("statistics", {})
-    music  = detail.get("music", {})
 
     create_time_raw = detail.get("create_time", "")
     try:
@@ -331,25 +330,15 @@ def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pa
     except Exception:
         create_time = ""
 
-    duration = detail.get("video", {}).get("duration", "") or detail.get("duration", "")
-
     return [
-        share_url, hashtag, country, marca_kc, competidor, pais, run_datetime,  # FIX 1: 'pais' em vez de 'paid'
+        share_url, hashtag, country, marca_kc, competidor, pais, run_datetime,
         detail.get("aweme_id", ""),
         detail.get("desc", ""),
         create_time,
         detail.get("region", ""),
-        duration,
         author.get("unique_id", ""),
         author.get("nickname", ""),
-        author.get("uid", ""),
-        author.get("sec_uid", ""),
-        author.get("region", ""),
-        author.get("signature", ""),
         author.get("follower_count", ""),
-        author.get("following_count", ""),
-        author.get("total_favorited", ""),
-        int(author.get("verification_type", 0)) > 0,
         stats.get("play_count", ""),
         stats.get("digg_count", ""),
         stats.get("comment_count", ""),
@@ -357,26 +346,15 @@ def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pa
         stats.get("collect_count", ""),
         stats.get("download_count", ""),
         stats.get("repost_count", ""),
-        music.get("title", ""),
-        music.get("author", ""),
-        music.get("id_str", "") or str(music.get("id", "")),
-        music.get("duration", ""),
-        detail.get("is_ads", ""),
-        detail.get("is_paid_content", ""),
-        detail.get("aigc_info", {}).get("created_by_ai", ""),
     ]
 
 
 DETAIL_HEADER = [
     "share_url", "hashtag", "country", "marca_kc", "competidor", "pais", "run_datetime",
-    "aweme_id", "description", "create_time", "video_region", "duration_seconds",
-    "author_username", "author_nickname", "author_uid", "author_sec_uid",
-    "author_region", "author_bio", "author_followers", "author_following",
-    "author_total_likes", "author_verified",
+    "aweme_id", "description", "create_time", "video_region",
+    "author_username", "author_nickname", "author_followers",
     "play_count", "like_count", "comment_count", "share_count",
     "save_count", "download_count", "repost_count",
-    "music_title", "music_author", "music_id", "music_duration",
-    "is_ad", "is_paid_content", "created_by_ai",
 ]
 
 
