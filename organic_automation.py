@@ -26,7 +26,7 @@ tz_br = pytz.timezone("America/Sao_Paulo")
 
 DRIVE_FOLDER_ID = "1k8NDz3qxQ9ffZzkS2EsWT1tNSk3ghklU"
 SPREADSHEET_ID = "1FnauIqLuTe1c2N8Z-HQPy8wambQzBhpbLJY24JMCMNY"  # planilha de SAÍDA
-SHEET_NAME = "Hoja 2"
+SHEET_NAME = "Hoja 1"
 
 BASELINE_SPREADSHEET_ID = "1qMl_c5KgCDb0QCr4wOPnjnhdnmrHrDw3Fqs9T5F1wyg"  # planilha de baseline (ENTRADA)
 BASELINE_SHEET_RANGE = "A:Z"  # primeira aba da planilha de baseline
