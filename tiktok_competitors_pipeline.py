@@ -1,11 +1,9 @@
 import os
-import re
 import json
 import time
 import requests
 import pandas as pd
 from datetime import datetime, timezone, timedelta
-from google import genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -13,23 +11,17 @@ from googleapiclient.discovery import build
 # CONFIG
 # ==============================
 SOCIAVAULT_API_KEY = os.environ.get("SOCIAVAULT_API_KEY", "")
-GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS", "")
 
 SHEET_TIKTOK_PROFILE_ID   = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
 SHEET_TT_DATA_POST_ID     = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
-SHEET_TT_DATA_COMMENTS_ID = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
 
 TAB_TIKTOK_PROFILE   = "tt_competitors_data"
 TAB_TT_DATA_POST     = "tt_competitors_data_post"
-TAB_TT_DATA_COMMENTS = "tt_competitors_data_comments"
 
 API_BASE         = "https://api.sociavault.com/v1/scrape/tiktok"
 MAX_POSTS        = 10
 POST_MAX_DAYS    = 14
-GEMINI_BATCH     = 20
-GEMINI_MAX_RETRY = 2
-COMMENTS_LIMIT   = 100
 PROFILE_REFRESH_DAYS = 30  # só reprocessa um perfil se já passaram esses dias desde o último run
 
 # ==============================
@@ -146,57 +138,6 @@ def sv_get(endpoint, params, timeout=60):
     return resp.json()
 
 # ==============================
-# GEMINI HELPERS
-# ==============================
-
-def extrair_retry_seconds(error_str):
-    match = re.search(r"retry in ([0-9.]+)s", error_str)
-    if match:
-        return float(match.group(1)) + 2
-    return 60.0
-
-
-def classify_comments_batch(client, comments_text):
-    prompt = (
-        "Eres un analista de redes sociales. Clasifica cada comentario a continuación como "
-        "'promotor' (positivo, elogio, apoyo), 'detractor' (negativo, crítica, queja) "
-        "o 'neutral' (sin opinión clara, pregunta genérica, comentario factual, "
-        "irrelevante al contenido, o sin sentimiento definido).\n"
-        "IMPORTANTE: usa SIEMPRE el idioma español para el campo 'classification' "
-        "(valores permitidos, exactamente así: 'promotor', 'detractor', 'neutral') "
-        "y también para el campo 'classification_reason'. No uses inglés ni portugués "
-        "en ningún campo, incluso si el comentario original está en otro idioma.\n"
-        "Para cada comentario, devuelve un JSON con los campos 'classification' y 'classification_reason'.\n"
-        "Devuelve SOLO una lista JSON, sin markdown, sin texto adicional.\n\n"
-        "Comentarios:\n"
-    )
-    for i, text in enumerate(comments_text):
-        prompt += f"{i+1}. {text}\n"
-
-    for attempt in range(1, GEMINI_MAX_RETRY + 1):
-        try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-            raw = response.text.strip()
-            raw = re.sub(r"^```json|^```|```$", "", raw, flags=re.MULTILINE).strip()
-            return json.loads(raw)
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                wait = extrair_retry_seconds(err_str)
-                if attempt < GEMINI_MAX_RETRY:
-                    print(f"    Rate limit atingido. Aguardando {wait:.0f}s antes de tentar novamente (tentativa {attempt}/{GEMINI_MAX_RETRY})...", flush=True)
-                    time.sleep(wait)
-                else:
-                    print(f"    Rate limit após {GEMINI_MAX_RETRY} tentativas. Marcando lote como FALHA_API.", flush=True)
-                    return [{"classification": "FALHA_API", "classification_reason": "rate limit"} for _ in comments_text]
-            else:
-                print(f"    Erro no Gemini: {e}", flush=True)
-                return [{"classification": "ERRO", "classification_reason": str(e)} for _ in comments_text]
-
-# ==============================
 # ETAPA 1 — LER PERFIS
 # ==============================
 
@@ -219,7 +160,7 @@ def ler_perfis(service):
         .rename(columns={"username": "profile"})
         .dropna(subset=["profile"])
         .assign(date_added="")
-        .drop_duplicates(subset=["profile"])  # ← CORREÇÃO: evita processar o mesmo perfil mais de uma vez
+        .drop_duplicates(subset=["profile"])  # ← evita processar o mesmo perfil mais de uma vez
         .to_dict("records")
     )
     perfis = [p for p in perfis if p["profile"].strip()]
@@ -228,7 +169,7 @@ def ler_perfis(service):
     return perfis
 
 # ==============================
-# ETAPA 2.1 — VÍDEOS / POSTS
+# ETAPA 2 — VÍDEOS / POSTS
 # ==============================
 
 POST_COLS = [
@@ -266,7 +207,7 @@ def buscar_video_info(video_url, video_id):
 
 
 def processar_videos(service, username):
-    print(f"  [2.1] Buscando vídeos de: {username}", flush=True)
+    print(f"  [2] Buscando vídeos de: {username}", flush=True)
     try:
         data = sv_get("videos", {"handle": username, "limit": MAX_POSTS})
     except Exception as e:
@@ -372,135 +313,21 @@ def processar_videos(service, username):
     return []
 
 # ==============================
-# ETAPA 2.2 — COMENTÁRIOS
-# ==============================
-
-COMMENT_COLS = [
-    "comment_id", "video_id", "video_url", "text", "create_time",
-    "likes", "replies_count", "purchase_intent",
-    "user_name", "username", "language",
-    "classification", "classification_reason"
-]
-
-def processar_comentarios(service, client, post):
-    video_id  = str(post.get("video_id", ""))
-    video_url = post.get("video_url", "")
-
-    print(f"    [2.2] Buscando comentários do vídeo: {video_url}", flush=True)
-
-    existing_df = read_sheet(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS)
-    existing_ids = (
-        set(existing_df["comment_id"].astype(str).tolist())
-        if not existing_df.empty and "comment_id" in existing_df.columns
-        else set()
-    )
-
-    ensure_header(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, COMMENT_COLS)
-
-    novos  = []
-    cursor = None
-    pagina = 1
-
-    while len(novos) < COMMENTS_LIMIT:
-        params = {"url": video_url}
-        if cursor is not None:
-            params["cursor"] = cursor
-
-        try:
-            data = sv_get("comments", params)
-        except Exception as e:
-            print(f"      Erro ao buscar comentários (página {pagina}) do vídeo {video_id}: {e}", flush=True)
-            break
-
-        inner = data.get("data", data)
-        raw   = inner.get("comments", {})
-        if isinstance(raw, dict):
-            comments = list(raw.values())
-        elif isinstance(raw, list):
-            comments = raw
-        else:
-            comments = []
-
-        print(f"      Página {pagina}: {len(comments)} comentários recebidos.", flush=True)
-
-        novos_pagina = [
-            c for c in comments
-            if str(c.get("cid", c.get("comment_id", c.get("id", "")))) not in existing_ids
-        ]
-        novos.extend(novos_pagina)
-
-        has_more = inner.get("has_more", 0)
-        cursor   = inner.get("cursor", None)
-        pagina  += 1
-
-        if not has_more or cursor is None:
-            break
-
-        time.sleep(1)
-
-    if not novos:
-        print(f"      Sem comentários novos para vídeo {video_id}.", flush=True)
-        return
-
-    if len(novos) > COMMENTS_LIMIT:
-        print(f"      Limitando de {len(novos)} para {COMMENTS_LIMIT} comentários.", flush=True)
-        novos = novos[:COMMENTS_LIMIT]
-
-    print(f"      {len(novos)} comentário(s) novo(s) para classificar.", flush=True)
-
-    all_rows = []
-    for i in range(0, len(novos), GEMINI_BATCH):
-        lote   = novos[i:i + GEMINI_BATCH]
-        textos = [c.get("text", c.get("comment", "")) for c in lote]
-        print(f"      Classificando lote {i // GEMINI_BATCH + 1}...", flush=True)
-        classificacoes = classify_comments_batch(client, textos)
-
-        for j, c in enumerate(lote):
-            clf    = classificacoes[j] if j < len(classificacoes) else {"classification": "ERRO", "classification_reason": "sem resposta"}
-            c_user = c.get("user", {})
-            row = {
-                "comment_id":            str(c.get("cid", c.get("comment_id", c.get("id", "")))),
-                "video_id":              video_id,
-                "video_url":             video_url,
-                "text":                  c.get("text", ""),
-                "create_time":           c.get("create_time", ""),
-                "likes":                 c.get("digg_count", c.get("likes", "")),
-                "replies_count":         c.get("reply_comment_total", c.get("replies_count", "")),
-                "purchase_intent":       c.get("is_high_purchase_intent", ""),
-                "user_name":             c_user.get("nickname", c.get("user_name", "")),
-                "username":              c_user.get("unique_id", c.get("username", "")),
-                "language":              c.get("comment_language", c.get("language", "")),
-                "classification":        clf.get("classification", ""),
-                "classification_reason": clf.get("classification_reason", "")
-            }
-            all_rows.append(row)
-        time.sleep(2)
-
-    if all_rows:
-        df_comments = pd.DataFrame(all_rows)[COMMENT_COLS]
-        append_to_sheet(service, SHEET_TT_DATA_COMMENTS_ID, TAB_TT_DATA_COMMENTS, df_comments)
-        print(f"      {len(all_rows)} comentário(s) salvo(s) para vídeo {video_id}.", flush=True)
-
-# ==============================
 # MAIN
 # ==============================
 
 def main():
-    print("=== TikTok Pipeline (Competitors) ===", flush=True)
+    print("=== TikTok Pipeline (Competitors) - Posts only ===", flush=True)
 
     print(f"SOCIAVAULT_API_KEY: {'OK' if SOCIAVAULT_API_KEY else 'FALTANDO'}", flush=True)
-    print(f"GEMINI_API_KEY:     {'OK' if GEMINI_API_KEY else 'FALTANDO'}", flush=True)
     print(f"GDRIVE_CREDENTIALS: {'OK' if GDRIVE_CREDENTIALS else 'FALTANDO'}", flush=True)
 
-    if not all([SOCIAVAULT_API_KEY, GEMINI_API_KEY, GDRIVE_CREDENTIALS]):
+    if not all([SOCIAVAULT_API_KEY, GDRIVE_CREDENTIALS]):
         print("ERRO: Variáveis de ambiente faltando. Abortando.", flush=True)
         return
 
     print("[INIT] Autenticando no Google Sheets...", flush=True)
     service = get_google_service()
-
-    print("[INIT] Inicializando cliente Gemini...", flush=True)
-    client = genai.Client(api_key=GEMINI_API_KEY)
 
     perfis = ler_perfis(service)
     if not perfis:
@@ -523,19 +350,12 @@ def main():
         try:
             posts = processar_videos(service, username)
         except Exception as e:
-            print(f"  Erro em 2.1 para {username}: {e}. Pulando.", flush=True)
+            print(f"  Erro em 2 para {username}: {e}. Pulando.", flush=True)
             continue
 
         if not posts:
-            print(f"  Sem posts para processar comentários de {username}.", flush=True)
+            print(f"  Sem posts processados para {username}.", flush=True)
             continue
-
-        for post in posts:
-            try:
-                processar_comentarios(service, client, post)
-            except Exception as e:
-                print(f"  Erro em 2.2 para vídeo {post.get('video_id', '?')}: {e}. Pulando.", flush=True)
-                continue
 
     print("\n=== Pipeline finalizado ===", flush=True)
 
