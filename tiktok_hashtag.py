@@ -65,6 +65,20 @@ def get_google_services():
 # ETAPA 1 — LER HASHTAGS
 # ==============================
 
+def parse_run_datetime(raw_date):
+    """Tenta parsear uma data/hora de execução em vários formatos. Retorna datetime tz-aware ou None."""
+    raw_date = (raw_date or "").strip()
+    if not raw_date:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+        try:
+            parsed = datetime.strptime(raw_date, fmt)
+            return tz_br.localize(parsed)
+        except ValueError:
+            continue
+    return None
+
+
 def read_hashtags(sheets_service):
     result = sheets_service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
@@ -89,14 +103,18 @@ def read_hashtags(sheets_service):
     col_marca_kc   = headers.index("marca_kc")   if "marca_kc"   in headers else None
     col_competidor = headers.index("competidor") if "competidor" in headers else None
     col_pais       = headers.index("pais")       if "pais"       in headers else None
+    col_rundate    = headers.index("rundatetime") if "rundatetime" in headers else None
 
     if col_country is None:
         print("  Aviso: coluna 'Country' não encontrada. Sem filtro de país.")
+    if col_rundate is None:
+        print("  Aviso: coluna 'rundatetime' não encontrada em Hashtag_Data. Será criada ao gravar.")
 
     entries = []
     seen = set()
 
-    for row in rows[1:]:
+    # row_idx começa em 2 pois rows[0] é o header (linha 1 do Sheets)
+    for row_idx, row in enumerate(rows[1:], start=2):
         if len(row) <= col_hashtag:
             continue
 
@@ -109,6 +127,7 @@ def read_hashtags(sheets_service):
         marca_kc   = (row[col_marca_kc].strip()         if col_marca_kc   is not None and len(row) > col_marca_kc   else "")
         competidor = (row[col_competidor].strip()        if col_competidor is not None and len(row) > col_competidor else "")
         pais       = (row[col_pais].strip()              if col_pais       is not None and len(row) > col_pais       else "")
+        last_run   = (parse_run_datetime(row[col_rundate]) if col_rundate is not None and len(row) > col_rundate else None)
 
         key = (tag.lower(), country, marca_kc, competidor, pais)
 
@@ -120,7 +139,9 @@ def read_hashtags(sheets_service):
                 "country": country,
                 "marca_kc": marca_kc,
                 "competidor": competidor,
-                "pais": pais
+                "pais": pais,
+                "row_index": row_idx,
+                "last_run": last_run
             })
 
     print(f"  {len(entries)} entrada(s) única(s) encontrada(s):")
@@ -202,64 +223,60 @@ def get_existing_urls_posts(sheets_service):
         return set()
 
 
-def get_last_rundate_per_hashtag(sheets_service):
-    """Retorna dict {hashtag_lower: last_run_datetime (datetime tz-aware)} a partir da aba Hashtag_posts."""
-    try:
-        result = sheets_service.spreadsheets().values().get(
+def ensure_rundatetime_column(sheets_service):
+    """Garante que a aba Hashtag_Data tenha uma coluna 'rundatetime'. Retorna o índice (0-based) da coluna."""
+    result = sheets_service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_HASHTAGS}!1:1"
+    ).execute()
+    header_row = result.get("values", [[]])
+    headers = header_row[0] if header_row else []
+    headers_lower = [h.strip().lower() for h in headers]
+
+    if "rundatetime" in headers_lower:
+        return headers_lower.index("rundatetime")
+
+    new_col_idx = len(headers)
+    new_col_letter = column_index_to_letter(new_col_idx)
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_HASHTAGS}!{new_col_letter}1",
+        valueInputOption="RAW",
+        body={"values": [["rundatetime"]]}
+    ).execute()
+    print(f"  Coluna 'rundatetime' criada em Hashtag_Data (coluna {new_col_letter}).")
+    return new_col_idx
+
+
+def update_rundatetime_in_hashtag_data(sheets_service, row_indices, run_datetime):
+    """Grava run_datetime na coluna 'rundatetime' de Hashtag_Data, para as linhas processadas nesta rodada."""
+    if not row_indices:
+        print("  Nenhuma hashtag processada nesta rodada. Nada para atualizar em Hashtag_Data.")
+        return
+
+    rundate_col_idx = ensure_rundatetime_column(sheets_service)
+    rundate_col_letter = column_index_to_letter(rundate_col_idx)
+
+    data_updates = [
+        {
+            "range": f"{SHEET_HASHTAGS}!{rundate_col_letter}{row_idx}",
+            "values": [[run_datetime]]
+        }
+        for row_idx in row_indices
+    ]
+
+    BATCH_SIZE = 500
+    for start in range(0, len(data_updates), BATCH_SIZE):
+        chunk = data_updates[start:start + BATCH_SIZE]
+        sheets_service.spreadsheets().values().batchUpdate(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_POSTS}!A:Z"
+            body={
+                "valueInputOption": "RAW",
+                "data": chunk
+            }
         ).execute()
-        rows = result.get("values", [])
-        if len(rows) <= 1:
-            return {}
 
-        headers = [h.strip().lower() for h in rows[0]]
-
-        possible_hashtag_names = ["hashtag", "hash_tag", "hashtags"]
-        possible_rundate_names = ["rundatetime", "run_datetime", "run_date", "rundate", "data_run", "data", "datetime"]
-
-        col_hashtag = next((headers.index(n) for n in possible_hashtag_names if n in headers), None)
-        col_rundate = next((headers.index(n) for n in possible_rundate_names if n in headers), None)
-
-        if col_hashtag is None or col_rundate is None:
-            print(f"  Aviso: colunas 'hashtag' ou 'run_datetime' não encontradas em Hashtag_posts. Colunas disponíveis: {headers}")
-            return {}
-
-        last_dates = {}
-
-        for row in rows[1:]:
-            if len(row) <= max(col_hashtag, col_rundate):
-                continue
-
-            tag = row[col_hashtag].strip().lower()
-            raw_date = row[col_rundate].strip()
-
-            if not tag or not raw_date:
-                continue
-
-            try:
-                parsed = None
-                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
-                    try:
-                        parsed = datetime.strptime(raw_date, fmt)
-                        break
-                    except ValueError:
-                        continue
-                if parsed is None:
-                    continue
-                parsed = tz_br.localize(parsed)
-            except Exception:
-                continue
-
-            if tag not in last_dates or parsed > last_dates[tag]:
-                last_dates[tag] = parsed
-
-        print(f"  Última run_datetime carregada para {len(last_dates)} hashtag(s).")
-        return last_dates
-
-    except Exception as e:
-        print(f"  Aviso ao ler última run_datetime de Hashtag_posts: {e}")
-        return {}
+    print(f"  Hashtag_Data: rundatetime atualizado em {len(row_indices)} linha(s).")
 
 
 def save_posts_to_sheets(sheets_service, rows_to_add):
@@ -656,12 +673,12 @@ def main():
 
     # FIX 2: indentação corrigida — fora do for, no nível correto
     existing_urls = get_existing_urls_posts(sheets_service)
-    last_rundates = get_last_rundate_per_hashtag(sheets_service)
     now_br = datetime.now(tz_br)
     run_datetime = now_br.strftime("%Y-%m-%d %H:%M:%S")
 
     new_post_rows = []
     total_filtered_by_country = 0
+    rows_to_mark_rundatetime = []  # row_index das hashtags processadas com sucesso (p/ Hashtag_Data)
 
     # Acumula todos os posts para etapa 3
     all_posts = []
@@ -673,6 +690,7 @@ def main():
         marca_kc   = entry["marca_kc"]
         competidor = entry["competidor"]
         pais       = entry["pais"]
+        row_index  = entry["row_index"]
 
         print(
             f"\n  HASHTAG: #{hashtag}" +
@@ -680,7 +698,7 @@ def main():
         )
 
         # ── Checagem de janela mínima entre execuções ──────────
-        last_run = last_rundates.get(hashtag.lower())
+        last_run = entry["last_run"]
         if last_run is not None:
             days_since_last_run = (now_br - last_run).days
             if days_since_last_run <= MIN_DAYS_BETWEEN_RUNS:
@@ -696,6 +714,9 @@ def main():
         except Exception as e:
             print(f"    ERRO ao buscar #{hashtag}: {e}. Pulando.")
             continue
+
+        # Hashtag processada com sucesso nesta rodada -> marcar rundatetime em Hashtag_Data
+        rows_to_mark_rundatetime.append(row_index)
 
         filtered_out = sum(1 for p in posts if p["region"] not in ALLOWED_COUNTRIES)
         total_filtered_by_country += filtered_out
@@ -745,6 +766,10 @@ def main():
     # Salva posts novos em Hashtag_posts
     sheets_service = get_google_services()
     save_posts_to_sheets(sheets_service, new_post_rows)
+
+    # Atualiza rundatetime em Hashtag_Data para as hashtags processadas nesta rodada
+    sheets_service = get_google_services()
+    update_rundatetime_in_hashtag_data(sheets_service, rows_to_mark_rundatetime, run_datetime)
 
     # ── ETAPA 3 — Buscar video-info para todos os posts ────────
     print(f"\n{'=' * 60}")
