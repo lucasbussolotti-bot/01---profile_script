@@ -13,11 +13,11 @@ from googleapiclient.discovery import build
 SOCIAVAULT_API_KEY = os.environ.get("SOCIAVAULT_API_KEY", "")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS", "")
 
-SHEET_TIKTOK_PROFILE_ID   = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
-SHEET_TT_DATA_POST_ID     = "1bwl-10dnMe1zmpWBUVsfxsSBesXZ5h2zrmX27XBQpWk"
+SHEET_TIKTOK_PROFILE_ID   = "1cn68TA8_ajbbIOaMofE_7-Vc4_BWfQRMHehrO6SB_Q4"
+SHEET_TT_DATA_POST_ID     = "1cn68TA8_ajbbIOaMofE_7-Vc4_BWfQRMHehrO6SB_Q4"
 
 TAB_TIKTOK_PROFILE   = "tt_competitors_data"
-TAB_TT_DATA_POST     = "tt_competitors_data_post"
+TAB_TT_DATA_POST     = "Hashtag_posts_detail"
 
 API_BASE         = "https://api.sociavault.com/v1/scrape/tiktok"
 MAX_POSTS        = 10
@@ -173,12 +173,11 @@ def ler_perfis(service):
 # ==============================
 
 POST_COLS = [
-    "video_id", "description", "create_time", "author",
-    "username", "followers", "likes", "comments",
-    "views", "shares", "run_datetime", "video_url",
-    "digg_count", "comment_count", "share_count", "play_count",
-    "collect_count", "download_count", "whatsapp_share_count",
-    "forward_count", "repost_count"
+    "video_url", "hashtag", "country", "marca_kc", "Competidor", "Pais",
+    "run_datetime", "video_id", "description", "create_time",
+    "video_region", "author", "username", "followers",
+    "play_count", "digg_count", "comment_count", "share_count",
+    "repost_count", "download_count"
 ]
 
 def buscar_video_info(video_url, video_id):
@@ -187,22 +186,20 @@ def buscar_video_info(video_url, video_id):
         aweme = data.get("data", {}).get("aweme_detail", {})
         stats = aweme.get("statistics", {})
         return {
-            "digg_count":           stats.get("digg_count", ""),
-            "comment_count":        stats.get("comment_count", ""),
-            "share_count":          stats.get("share_count", ""),
-            "play_count":           stats.get("play_count", ""),
-            "collect_count":        stats.get("collect_count", ""),
-            "download_count":       stats.get("download_count", ""),
-            "whatsapp_share_count": stats.get("whatsapp_share_count", ""),
-            "forward_count":        stats.get("forward_count", ""),
-            "repost_count":         stats.get("repost_count", ""),
+            "video_region":   aweme.get("region", ""),
+            "digg_count":     stats.get("digg_count", ""),
+            "comment_count":  stats.get("comment_count", ""),
+            "share_count":    stats.get("share_count", ""),
+            "play_count":     stats.get("play_count", ""),
+            "download_count": stats.get("download_count", ""),
+            "repost_count":   stats.get("repost_count", ""),
         }
     except Exception as e:
         print(f"      Erro ao buscar video-info de {video_id}: {e}", flush=True)
         return {
-            "digg_count": "", "comment_count": "", "share_count": "",
-            "play_count": "", "collect_count": "", "download_count": "",
-            "whatsapp_share_count": "", "forward_count": "", "repost_count": ""
+            "video_region": "", "digg_count": "", "comment_count": "",
+            "share_count": "", "play_count": "", "download_count": "",
+            "repost_count": ""
         }
 
 
@@ -259,12 +256,6 @@ def processar_videos(service, username):
             author_name    = str(author_obj)
             follower_count = v.get("followers", "")
 
-        stats    = v.get("statistics", {})
-        likes    = stats.get("digg_count", v.get("likes", ""))
-        comments = stats.get("comment_count", v.get("comments", ""))
-        views    = stats.get("play_count", v.get("views", ""))
-        shares   = stats.get("share_count", v.get("shares", ""))
-
         video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
 
         # create_time vem como epoch (segundos) e representa a data de PUBLICAÇÃO do vídeo
@@ -275,27 +266,26 @@ def processar_videos(service, username):
         video_info = buscar_video_info(video_url, video_id)
 
         row = {
-            "video_id":             video_id,
-            "description":          v.get("desc", v.get("description", "")),
-            "create_time":          create_time_str,    # data de publicação do post, já formatada
-            "author":               author_name,
-            "username":             username,
-            "followers":            follower_count,
-            "likes":                likes,
-            "comments":             comments,
-            "views":                views,
-            "shares":               shares,
-            "run_datetime":         run_datetime_str,   # data/hora em que o pipeline rodou
-            "video_url":            video_url,
-            "digg_count":           video_info["digg_count"],
-            "comment_count":        video_info["comment_count"],
-            "share_count":          video_info["share_count"],
-            "play_count":           video_info["play_count"],
-            "collect_count":        video_info["collect_count"],
-            "download_count":       video_info["download_count"],
-            "whatsapp_share_count": video_info["whatsapp_share_count"],
-            "forward_count":        video_info["forward_count"],
-            "repost_count":         video_info["repost_count"],
+            "video_url":      video_url,
+            "hashtag":        "",
+            "country":        "",
+            "marca_kc":       "",
+            "Competidor":     "",
+            "Pais":           "",
+            "run_datetime":   run_datetime_str,   # data/hora em que o pipeline rodou
+            "video_id":       video_id,
+            "description":    v.get("desc", v.get("description", "")),
+            "create_time":    create_time_str,    # data de publicação do post, já formatada
+            "video_region":   video_info["video_region"],
+            "author":         author_name,
+            "username":       username,
+            "followers":      follower_count,
+            "play_count":     video_info["play_count"],
+            "digg_count":     video_info["digg_count"],
+            "comment_count":  video_info["comment_count"],
+            "share_count":    video_info["share_count"],
+            "repost_count":   video_info["repost_count"],
+            "download_count": video_info["download_count"],
         }
         novos.append(row)
 
