@@ -155,15 +155,23 @@ def ler_perfis(service):
         print(f"  Coluna 'Username' não encontrada. Colunas disponíveis: {list(df.columns)}", flush=True)
         return []
 
+    cols_to_keep = ["username"]
+    if "type" in df.columns:
+        cols_to_keep.append("type")
+    if "country" in df.columns:
+        cols_to_keep.append("country")
+
     perfis = (
-        df[["username"]]
+        df[cols_to_keep]
         .rename(columns={"username": "profile"})
         .dropna(subset=["profile"])
-        .assign(date_added="")
         .drop_duplicates(subset=["profile"])  # ← evita processar o mesmo perfil mais de uma vez
         .to_dict("records")
     )
     perfis = [p for p in perfis if p["profile"].strip()]
+    for p in perfis:
+        p.setdefault("type", "")
+        p.setdefault("country", "")
 
     print(f"  {len(perfis)} perfil(is) encontrado(s).", flush=True)
     return perfis
@@ -203,7 +211,7 @@ def buscar_video_info(video_url, video_id):
         }
 
 
-def processar_videos(service, username):
+def processar_videos(service, username, type_val="", country_val=""):
     print(f"  [2] Buscando vídeos de: {username}", flush=True)
     try:
         data = sv_get("videos", {"handle": username, "limit": MAX_POSTS})
@@ -234,9 +242,9 @@ def processar_videos(service, username):
     ensure_header(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST, POST_COLS)
 
     existing_df = read_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST)
-    existing_ids = (
-        set(existing_df["video_id"].astype(str).tolist())
-        if not existing_df.empty and "video_id" in existing_df.columns
+    existing_urls = (
+        set(existing_df["video_url"].astype(str).tolist())
+        if not existing_df.empty and "video_url" in existing_df.columns
         else set()
     )
 
@@ -245,7 +253,9 @@ def processar_videos(service, username):
 
     for v in videos:
         video_id = str(v.get("aweme_id", v.get("video_id", v.get("id", ""))))
-        if video_id in existing_ids:
+        video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
+
+        if video_url in existing_urls:
             continue
 
         author_obj = v.get("author", {})
@@ -256,8 +266,6 @@ def processar_videos(service, username):
             author_name    = str(author_obj)
             follower_count = v.get("followers", "")
 
-        video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
-
         # create_time vem como epoch (segundos) e representa a data de PUBLICAÇÃO do vídeo
         raw_create_time = v.get("create_time", v.get("createTime", ""))
         create_time_str = epoch_to_datetime_str(raw_create_time)
@@ -267,11 +275,11 @@ def processar_videos(service, username):
 
         row = {
             "video_url":      video_url,
-            "hashtag":        "",
-            "country":        "",
+            "hashtag":        type_val,
+            "country":        country_val,
             "marca_kc":       "",
-            "Competidor":     "",
-            "Pais":           "",
+            "Competidor":     username,
+            "Pais":           country_val,
             "run_datetime":   run_datetime_str,   # data/hora em que o pipeline rodou
             "video_id":       video_id,
             "description":    v.get("desc", v.get("description", "")),
@@ -288,6 +296,7 @@ def processar_videos(service, username):
             "download_count": video_info["download_count"],
         }
         novos.append(row)
+        existing_urls.add(video_url)
 
     if novos:
         df_new = pd.DataFrame(novos)[POST_COLS]
@@ -338,7 +347,12 @@ def main():
             continue
 
         try:
-            posts = processar_videos(service, username)
+            posts = processar_videos(
+                service,
+                username,
+                type_val=perfil.get("type", ""),
+                country_val=perfil.get("country", "")
+            )
         except Exception as e:
             print(f"  Erro em 2 para {username}: {e}. Pulando.", flush=True)
             continue
