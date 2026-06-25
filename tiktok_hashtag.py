@@ -349,11 +349,12 @@ def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pa
 
     return [
         "hashtag",  # type_post — origem do post sempre é busca por hashtag neste script
-        share_url, hashtag, country, marca_kc, competidor, pais, run_datetime,
+        share_url, hashtag, country, marca_kc, competidor,
+        detail.get("region", ""),  # video_region — ocupa o lugar de 'pais'
+        run_datetime,
         detail.get("aweme_id", ""),
         detail.get("desc", ""),
         create_time,
-        detail.get("region", ""),
         author.get("unique_id", ""),
         author.get("nickname", ""),
         author.get("follower_count", ""),
@@ -368,8 +369,8 @@ def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pa
 
 
 DETAIL_HEADER = [
-    "type_post", "share_url", "hashtag", "country", "marca_kc", "competidor", "pais", "run_datetime",
-    "aweme_id", "description", "create_time", "video_region",
+    "type_post", "share_url", "hashtag", "country", "marca_kc", "competidor", "video_region", "run_datetime",
+    "aweme_id", "description", "create_time",
     "author_username", "author_nickname", "author_followers",
     "play_count", "like_count", "comment_count", "share_count",
     "save_count", "download_count", "repost_count",
