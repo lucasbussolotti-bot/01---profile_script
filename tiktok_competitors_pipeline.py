@@ -185,7 +185,7 @@ POST_COLS = [
     "run_datetime", "video_id", "description", "create_time",
     "video_region", "author", "username", "followers",
     "play_count", "digg_count", "comment_count", "share_count",
-    "repost_count", "download_count"
+    "collect_count", "download_count", "repost_count"
 ]
 
 def buscar_video_info(video_url, video_id):
@@ -199,6 +199,7 @@ def buscar_video_info(video_url, video_id):
             "comment_count":  stats.get("comment_count", ""),
             "share_count":    stats.get("share_count", ""),
             "play_count":     stats.get("play_count", ""),
+            "collect_count":  stats.get("collect_count", ""),
             "download_count": stats.get("download_count", ""),
             "repost_count":   stats.get("repost_count", ""),
         }
@@ -206,8 +207,8 @@ def buscar_video_info(video_url, video_id):
         print(f"      Erro ao buscar video-info de {video_id}: {e}", flush=True)
         return {
             "video_region": "", "digg_count": "", "comment_count": "",
-            "share_count": "", "play_count": "", "download_count": "",
-            "repost_count": ""
+            "share_count": "", "play_count": "", "collect_count": "",
+            "download_count": "", "repost_count": ""
         }
 
 
@@ -292,8 +293,9 @@ def processar_videos(service, username, type_val="", country_val=""):
             "digg_count":     video_info["digg_count"],
             "comment_count":  video_info["comment_count"],
             "share_count":    video_info["share_count"],
-            "repost_count":   video_info["repost_count"],
+            "collect_count":  video_info["collect_count"],
             "download_count": video_info["download_count"],
+            "repost_count":   video_info["repost_count"],
         }
         novos.append(row)
         existing_urls.add(video_url)
