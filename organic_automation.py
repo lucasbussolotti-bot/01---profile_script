@@ -77,6 +77,9 @@ def find_latest_file(drive_service):
         q=query,
         fields="files(id, name)",
         pageSize=1000,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+        corpora="allDrives",
     ).execute()
     files = results.get("files", [])
 
@@ -104,7 +107,7 @@ def find_latest_file(drive_service):
 
 
 def download_file(drive_service, file_id, local_path):
-    request = drive_service.files().get_media(fileId=file_id)
+    request = drive_service.files().get_media(fileId=file_id, supportsAllDrives=True)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
