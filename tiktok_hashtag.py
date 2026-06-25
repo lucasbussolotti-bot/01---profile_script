@@ -376,6 +376,32 @@ DETAIL_HEADER = [
 ]
 
 
+def get_processed_aweme_ids(sheets_service):
+    """Retorna set de aweme_ids já existentes em Hashtag_posts_detail."""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{SHEET_DETAIL}!A:Z"
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) <= 1:
+            return set()
+        headers = [h.strip().lower() for h in rows[0]]
+        if "aweme_id" not in headers:
+            print("  Aviso: coluna 'aweme_id' não encontrada em Hashtag_posts_detail. Sem checagem por aweme_id.")
+            return set()
+        id_col = headers.index("aweme_id")
+        processed = set()
+        for row in rows[1:]:
+            if len(row) > id_col and row[id_col].strip():
+                processed.add(row[id_col].strip())
+        print(f"  aweme_ids já existentes em Hashtag_posts_detail: {len(processed)}")
+        return processed
+    except Exception as e:
+        print(f"  Aviso ao ler aweme_ids de Hashtag_posts_detail: {e}")
+        return set()
+
+
 def get_processed_urls(sheets_service):
     """Retorna set de share_urls já processadas em Hashtag_posts_detail."""
     try:
@@ -777,12 +803,14 @@ def main():
     print(f"[ETAPA 3] Buscando video-info para {len(all_posts)} post(s)...")
     print(f"{'=' * 60}")
 
-    sheets_service  = get_google_services()
-    processed_urls  = get_processed_urls(sheets_service)
+    sheets_service     = get_google_services()
+    processed_urls     = get_processed_urls(sheets_service)
+    processed_aweme_ids = get_processed_aweme_ids(sheets_service)
     run_datetime    = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
     new_detail_rows = []
     urls_to_remove  = []  # posts sem a hashtag na description -> remover de Hashtag_posts
     errors          = 0
+    skipped_duplicate_aweme_id = 0
 
     for i, post in enumerate(all_posts, start=1):
         share_url  = post["share_url"]
@@ -804,6 +832,14 @@ def main():
                 print(f"    Aviso: resposta vazia. Pulando.")
                 continue
 
+            aweme_id = str(detail.get("aweme_id", "")).strip()
+
+            if aweme_id and aweme_id in processed_aweme_ids:
+                print(f"    Descartado: aweme_id '{aweme_id}' já existe em Hashtag_posts_detail. Pulando.")
+                processed_urls.add(share_url)
+                skipped_duplicate_aweme_id += 1
+                continue
+
             description = detail.get("desc", "")
 
             if not hashtag_in_description(hashtag, description):
@@ -815,6 +851,8 @@ def main():
             row = [str(v) if v is not None else "" for v in row]
             new_detail_rows.append(row)
             processed_urls.add(share_url)
+            if aweme_id:
+                processed_aweme_ids.add(aweme_id)
             print(f"    OK — @{detail.get('author', {}).get('unique_id', '?')} | plays: {detail.get('statistics', {}).get('play_count', '?')}")
 
         except Exception as e:
@@ -849,6 +887,7 @@ def main():
     print(f"  Posts novos salvos em Hashtag_posts:           {len(new_post_rows)}")
     print(f"  Posts não salvos (fora da América Central/Sul): {total_filtered_by_country}")
     print(f"  Detalhes novos salvos em Hashtag_posts_detail: {len(new_detail_rows)}")
+    print(f"  Posts pulados (aweme_id já existente):         {skipped_duplicate_aweme_id}")
     print(f"  Posts removidos (hashtag fora da description):{len(urls_to_remove)}")
     print(f"  Erros no video-info:                           {errors}")
     print(f"{'=' * 60}")
