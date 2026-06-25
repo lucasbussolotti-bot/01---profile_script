@@ -83,6 +83,10 @@ def find_latest_file(drive_service):
     ).execute()
     files = results.get("files", [])
 
+    print(f"[DEBUG] Arquivos visíveis na pasta {DRIVE_FOLDER_ID}: {len(files)}")
+    for f in files:
+        print(f"[DEBUG]  - {f['name']} (id={f['id']})")
+
     candidates = []
     for f in files:
         m = FILENAME_PATTERN.match(f["name"])
@@ -95,9 +99,18 @@ def find_latest_file(drive_service):
             continue
         candidates.append((file_date, f))
 
+    if not files:
+        raise RuntimeError(
+            "Nenhum arquivo foi retornado para essa pasta. Provavelmente a service "
+            "account não tem acesso a essa pasta, ou o ID da pasta está errado. "
+            "Confirme se a pasta foi compartilhada com o e-mail da service account "
+            "(campo 'client_email' do JSON de credenciais)."
+        )
+
     if not candidates:
         raise RuntimeError(
-            "Nenhum arquivo no padrão DDMMAAAA.xlsx foi encontrado na pasta do Drive."
+            "Nenhum arquivo no padrão DDMMAAAA.xlsx foi encontrado na pasta do Drive. "
+            "Veja a lista de arquivos no log [DEBUG] acima para conferir os nomes reais."
         )
 
     candidates.sort(key=lambda x: x[0])
