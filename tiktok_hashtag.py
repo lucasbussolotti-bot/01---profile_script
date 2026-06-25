@@ -348,6 +348,7 @@ def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pa
         create_time = ""
 
     return [
+        "hashtag",  # type_post — origem do post sempre é busca por hashtag neste script
         share_url, hashtag, country, marca_kc, competidor, pais, run_datetime,
         detail.get("aweme_id", ""),
         detail.get("desc", ""),
@@ -367,7 +368,7 @@ def extract_fields(detail, share_url, hashtag, country, marca_kc, competidor, pa
 
 
 DETAIL_HEADER = [
-    "share_url", "hashtag", "country", "marca_kc", "competidor", "pais", "run_datetime",
+    "type_post", "share_url", "hashtag", "country", "marca_kc", "competidor", "pais", "run_datetime",
     "aweme_id", "description", "create_time", "video_region",
     "author_username", "author_nickname", "author_followers",
     "play_count", "like_count", "comment_count", "share_count",
@@ -838,8 +839,8 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"[ETAPA 4] Preenchendo description em '{SHEET_POSTS}' (posts desta rodada)...")
     print(f"{'=' * 60}")
-    # share_url está no índice 0 e description no índice 8 de cada linha (ver DETAIL_HEADER)
-    processed_descriptions = [(row[0], row[8]) for row in new_detail_rows]
+    # share_url está no índice 1 e description no índice 9 de cada linha (ver DETAIL_HEADER, após adição de type_post)
+    processed_descriptions = [(row[1], row[9]) for row in new_detail_rows]
     sheets_service = get_google_services()
     fill_descriptions_in_posts(sheets_service, processed_descriptions)
 
