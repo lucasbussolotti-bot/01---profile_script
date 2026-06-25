@@ -243,9 +243,9 @@ def processar_videos(service, username, type_val="", country_val=""):
     ensure_header(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST, POST_COLS)
 
     existing_df = read_sheet(service, SHEET_TT_DATA_POST_ID, TAB_TT_DATA_POST)
-    existing_urls = (
-        set(existing_df["video_url"].astype(str).tolist())
-        if not existing_df.empty and "video_url" in existing_df.columns
+    existing_ids = (
+        set(existing_df["aweme_id"].astype(str).tolist())
+        if not existing_df.empty and "aweme_id" in existing_df.columns
         else set()
     )
 
@@ -256,7 +256,7 @@ def processar_videos(service, username, type_val="", country_val=""):
         video_id = str(v.get("aweme_id", v.get("video_id", v.get("id", ""))))
         video_url = f"https://www.tiktok.com/@{username}/video/{video_id}"
 
-        if video_url in existing_urls:
+        if video_id in existing_ids:
             continue
 
         author_obj = v.get("author", {})
@@ -298,7 +298,7 @@ def processar_videos(service, username, type_val="", country_val=""):
             "repost_count":   video_info["repost_count"],
         }
         novos.append(row)
-        existing_urls.add(video_url)
+        existing_ids.add(video_id)
 
     if novos:
         df_new = pd.DataFrame(novos)[POST_COLS]
