@@ -183,7 +183,7 @@ def ler_perfis(service):
 POST_COLS = [
     "type_post", "video_url", "hashtag", "country", "marca_kc", "Competidor", "Pais",
     "run_datetime", "video_id", "description", "create_time",
-    "video_region", "author", "username", "followers",
+    "author", "username", "followers",
     "play_count", "digg_count", "comment_count", "share_count",
     "collect_count", "download_count", "repost_count"
 ]
@@ -286,7 +286,6 @@ def processar_videos(service, username, type_val="", country_val=""):
             "video_id":       video_id,
             "description":    v.get("desc", v.get("description", "")),
             "create_time":    create_time_str,    # data de publicação do post, já formatada
-            "video_region":   video_info["video_region"],
             "author":         author_name,
             "username":       username,
             "followers":      follower_count,
