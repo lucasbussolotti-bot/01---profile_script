@@ -38,6 +38,32 @@ FILENAME_PATTERN = re.compile(r"^(\d{2})(\d{2})(\d{4})\.xlsx$")  # DDMMAAAA.xlsx
 
 KEY_COLUMN = "Organic_ID"
 
+# Colunas brutas que o script de fato usa, na ordem em que devem aparecer.
+# Qualquer coluna nova que a Winclap adicionar ao relatório (ex: "Total
+# Engagements (SUM)", "Post Reach (SUM)", "TikTok Video Views (SUM)") é
+# ignorada aqui de propósito, para que o layout da planilha de destino
+# nunca mude sem decisão explícita.
+RAW_COLUMNS_NEEDED = [
+    "Published Date",
+    "Social Network",
+    "Brand (Account)",
+    "Account",
+    "Country of Origin (Account)",
+    "Outbound Post",
+    "Outbound Post Id",
+    "Outbound Message Category",
+    "Permalink (EXTERNAL_VALUE)",
+    "Video Views (SUM)",
+    "TikTok Video Saves (SUM)",
+    "Instagram Business Post Saved (SUM)",
+    "Post Comments (SUM)",
+    "Count of Neutral Comments (SUM)",
+    "Count of Positive Comments (SUM)",
+    "Count of Negative Comments (SUM)",
+    "Post Shares (SUM)",
+    "Post Likes And Reactions (SUM)",
+]
+
 BASELINE_COLUMNS_MAP = {
     "Engagement Rate": "Baseline Engagement Rate",
     "Eng. Rate Neg. Com.": "Baseline Neg. Com.",
@@ -203,6 +229,23 @@ def classify_boost(row):
 def read_organic_sheet(local_path, baseline_df):
     df = pd.read_excel(local_path, sheet_name=SOURCE_TAB, header=HEADER_SKIPROWS)
 
+    # Mantém só as colunas brutas que o script de fato usa. Isso evita que
+    # colunas novas que a Winclap eventualmente adicione/remova no relatório
+    # (ex: "Total Engagements (SUM)", "Post Reach (SUM)",
+    # "TikTok Video Views (SUM)") alterem o número de colunas do df e
+    # quebrem o layout/range da planilha de destino.
+    missing_needed = [c for c in RAW_COLUMNS_NEEDED if c not in df.columns]
+    if missing_needed:
+        raise RuntimeError(
+            f"Colunas esperadas não encontradas no arquivo Excel: {missing_needed}. "
+            "O layout do relatório da Winclap pode ter mudado."
+        )
+    extra_cols = [c for c in df.columns if c not in RAW_COLUMNS_NEEDED]
+    if extra_cols:
+        print(f"[INFO] Colunas novas no relatório ignoradas de propósito: {extra_cols}")
+
+    df = df[RAW_COLUMNS_NEEDED].copy()
+
     # Descarta Replies
     df = df[df["Outbound Message Category"] != "Reply"].copy()
 
@@ -304,19 +347,35 @@ def upsert_rows(sheets_service, df):
     existing_headers, key_to_row_idx = read_existing_sheet(sheets_service)
     headers = ensure_header(sheets_service, existing_headers, sheet_columns)
 
+    # Trava de segurança: como agora o conjunto de colunas do df é fixo
+    # (RAW_COLUMNS_NEEDED + colunas calculadas), ele deve sempre bater com
+    # o cabeçalho já existente na planilha. Se não bater, é sinal de que o
+    # layout mudou de propósito e precisa de decisão manual antes de gravar.
+    if set(sheet_columns) != set(headers):
+        only_in_df = [c for c in sheet_columns if c not in headers]
+        only_in_sheet = [c for c in headers if c not in sheet_columns]
+        raise RuntimeError(
+            "O conjunto de colunas do df não bate com o cabeçalho da planilha de "
+            f"destino. Colunas só no df (novas): {only_in_df}. "
+            f"Colunas só na planilha (faltando no df): {only_in_sheet}. "
+            "Ajuste RAW_COLUMNS_NEEDED ou o cabeçalho da planilha antes de continuar."
+        )
+
     now_str = datetime.now(tz_br).strftime("%Y-%m-%d %H:%M:%S")
 
     update_data = []  # [{"range": "...", "values": [[...]]}]
     append_rows = []
 
+    data_headers = [h for h in headers if h != "Last Updated At"]
+    end_col_letter = _col_letter(len(headers))
+
     for _, row in df.iterrows():
         key = str(row[KEY_COLUMN]).strip()
-        row_values = [row.get(col, "") for col in sheet_columns[:-1]] + [now_str]
+        row_values = [row.get(col, "") for col in data_headers] + [now_str]
         row_values = [str(v) for v in row_values]
 
         if key in key_to_row_idx:
             sheet_row = key_to_row_idx[key]
-            end_col_letter = _col_letter(len(headers))
             update_data.append({
                 "range": f"{SHEET_NAME}!A{sheet_row}:{end_col_letter}{sheet_row}",
                 "values": [row_values],
