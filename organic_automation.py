@@ -79,7 +79,7 @@ SUFILE_WORKSHEET_INDEX = 2  # terceira aba (índice 0-based)
 
 # --- Consolidado final (SAÍDA etapa 2) ---
 CONSOLIDATED_SPREADSHEET_ID = "1sve3WtPrY89j2SPg-WHYK_gbWoseanXTNx-PXhHeVqk"
-CONSOLIDATED_SHEET_NAME = "Sheet1"  # ajuste se o nome da aba for diferente
+CONSOLIDATED_SHEET_NAME = "Hoja 1"
 
 
 # ==============================
@@ -491,10 +491,13 @@ def save_consolidated(sheets_service, df):
     Substitui todos os dados da planilha consolidada final.
     Limpa a aba e reescreve cabeçalho + dados.
     """
+    tab_name = CONSOLIDATED_SHEET_NAME
+    print(f"Planilha consolidada: usando aba '{tab_name}'.")
+
     # 1. Limpa a aba
     sheets_service.spreadsheets().values().clear(
         spreadsheetId=CONSOLIDATED_SPREADSHEET_ID,
-        range=f"{CONSOLIDATED_SHEET_NAME}!A:ZZ",
+        range=f"'{tab_name}'!A:ZZ",
     ).execute()
 
     # 2. Monta os valores (cabeçalho + dados)
